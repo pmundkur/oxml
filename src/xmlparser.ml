@@ -827,8 +827,10 @@ let parse_char p c =
 	  | XML_Attr_Value_Normal clist ->
 	      if c = '&' then
 		p.parse_state <- XML_Parse_Attr_Value (attr_name, XML_Attr_Value_Ref clist)
+	      else if c = '\t' || c = '\n' || c = '\r' then
+		p.parse_state <- XML_Parse_Attr_Value (attr_name, XML_Attr_Value_Normal (' ' :: clist))
 	      else
-		p.parse_state <- XML_Parse_Attr_Value (attr_name, XML_Attr_Value_Normal (c::clist))
+		p.parse_state <- XML_Parse_Attr_Value (attr_name, XML_Attr_Value_Normal (c :: clist))
 	  | XML_Attr_Value_Ref clist ->
 	      if c = '#' then
 		p.parse_state <- XML_Parse_Attr_Value (attr_name, XML_Attr_Value_CharRef clist)
@@ -868,9 +870,16 @@ let parse_char p c =
 		| ';' ->
 		    if ccode > 255 then
 		      raise (XMLParseError (loc, "Invalid character reference (not in supported range)"))
+		    else if ccode = 0 then
+		      raise (XMLParseError (loc, "Invalid character reference"))
+		    else if ccode = int_of_char '<' then
+		      raise (XMLParseError (loc, "Illegal character < in attribute value"))
 		    else
 		      let ch = char_of_int ccode in
-		      p.parse_state <- XML_Parse_Attr_Value (attr_name, XML_Attr_Value_Normal (ch :: clist))
+		      if ch = '\t' || ch = '\n' || ch = '\r' then
+			p.parse_state <- XML_Parse_Attr_Value (attr_name, XML_Attr_Value_Normal (' ' :: clist))
+		      else
+			p.parse_state <- XML_Parse_Attr_Value (attr_name, XML_Attr_Value_Normal (ch :: clist))
 		| _ ->
 		    raise (XMLParseError (loc, "Invalid character reference"))
 	      end
@@ -889,9 +898,16 @@ let parse_char p c =
 		| ';' ->
 		    if ccode > 255 then
 		      raise (XMLParseError (loc, "Invalid character reference (not in supported range)"))
+		    else if ccode = 0 then
+		      raise (XMLParseError (loc, "Invalid character reference"))
+		    else if ccode = int_of_char '<' then
+		      raise (XMLParseError (loc, "Illegal character < in attribute value"))			
 		    else
 		      let ch = char_of_int ccode in
-		      p.parse_state <- XML_Parse_Attr_Value (attr_name, XML_Attr_Value_Normal (ch :: clist))
+		      if ch = '\t' || ch = '\n' || ch = '\r' then
+			p.parse_state <- XML_Parse_Attr_Value (attr_name, XML_Attr_Value_Normal (' ' :: clist))
+		      else
+			p.parse_state <- XML_Parse_Attr_Value (attr_name, XML_Attr_Value_Normal (ch :: clist))
 		| _ ->
 		    raise (XMLParseError (loc, "Invalid character reference"))
 	      end
@@ -900,7 +916,10 @@ let parse_char p c =
 		let ename = List.rev ernlist in
 		try
 		  let eval = get_entity_as_char ename in
-		  p.parse_state <- XML_Parse_Attr_Value (attr_name, XML_Attr_Value_Normal (eval :: clist))
+		  if eval = '<' then
+		    raise (XMLParseError (loc, "Illegal character < in attribute value"))
+		  else
+		    p.parse_state <- XML_Parse_Attr_Value (attr_name, XML_Attr_Value_Normal (eval :: clist))
 		with Not_found ->
 		  raise (XMLParseError (loc, "Unsupported or unknown entity reference"))
 	      else if valid_name_char c then

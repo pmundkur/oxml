@@ -1,35 +1,58 @@
 oxml is currently a simple incremental XML non-conforming parser with
-a SAX API.
+a SAX API.  
 
-It is non-conforming in the sense it
+The parser was written in order to parse simple XML-based network
+protocols in asynchronous client-server applications.  Most of the
+complexity inducing portions of the XML specification has not been
+implemented, primarily support for DTD parsing and validation, 
+parsed external entities, and Unicode.
 
-- does not dereference any external doctypes or entities in 
-  non-standalone documents. Consequently, non-standalone documents
-  that are not well-formed may be parsed with no error.
+In particular, with reference to the XML 1.1 specification at
+http://www.w3.org/TR/2004/REC-xml11-20040204:
 
-- does not support entity and notation declarations and references,
-  and all numerical character references (only the subset of numerical
-  character references with values within the 0-255 range).  Unknown
-  entity and character references are left intact and passed to the
-  application; this is another reason why non-well-formed documents
-  may be passed without error.
+- Since there is no support for DTD whatsoever, features
+  that rely on DTD declarations like internal DTD sections,
+  conditional sections, entity and notation declarations are not
+  supported.
 
-- does not parse parameter declarations and references, and internal 
-  subsets of DTD declarations in the document.
+- No entities other than the predefined entities of Section 4.6 are
+  supported.
 
-- cannot perform DTD validation.
+- Attributes are always treated as of type CDATA, and attribute values
+  are normalized as specified in Section 3.3.3 of the XML 1.1
+  specification.  Charset encoding declarations are basically ignored,
+  and only ISO 8859-1 encoding is supported.
 
-- only handles characters in the ISO 8859-1 encoding.
+- xml:space is not implemented; all whitespace in element content is
+  treated as significant.
 
-- does not check character and parsed entity normalization.
+The following well-formedness constraints of the XML 1.1 specification
+are not implemented:
 
-- performs limited normalization of attribute values (only references
-  to the predefined entities and some character references are
-  normalized, viz. the subset mentioned above).
+http://www.w3.org/TR/2004/REC-xml11-20040204/#ExtSubset
+http://www.w3.org/TR/2004/REC-xml11-20040204/#PE-between-Decls
+http://www.w3.org/TR/2004/REC-xml11-20040204/#wfc-PEinInternalSubset
+http://www.w3.org/TR/2004/REC-xml11-20040204/#wf-entdeclared
 
-It also does not directly provide any namespace information to the
-application; the application needs to deduce this information from its
-SAX callbacks.
+The following well-formedness constraints are implemented:
 
-The reason this parser was written was to parse simple custom XML
-network protocols in client-server applications.
+http://www.w3.org/TR/2004/REC-xml11-20040204/#GIMatch
+http://www.w3.org/TR/2004/REC-xml11-20040204/#uniqattspec
+http://www.w3.org/TR/2004/REC-xml11-20040204/#NoExternalRefs
+http://www.w3.org/TR/2004/REC-xml11-20040204/#CleanAttrVals
+http://www.w3.org/TR/2004/REC-xml11-20040204/#uniqattspec
+
+(the implementation of the next constraint is restricted to the
+ ISO 8859-1 charset)
+http://www.w3.org/TR/2004/REC-xml11-20040204/#wf-Legalchar 
+
+(the next two constraints fall out trivially, since entity
+ declarations are not supported)
+http://www.w3.org/TR/2004/REC-xml11-20040204/#textent 
+http://www.w3.org/TR/2004/REC-xml11-20040204/#norecursion
+
+(the next constraint is also trivial, since internal DTD subsets are
+ not supported)
+http://www.w3.org/TR/2004/REC-xml11-20040204/#indtd
+
+End-of-line normalization (Section 2.11) is implemented.

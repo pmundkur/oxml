@@ -194,7 +194,7 @@ type t =
       mutable doc_name       : string option;                (* Doctype name *)
       mutable sys_literal    : string option;                (* Doctype system literal *)
       mutable pubid_literal  : string option;                (* Doctype pubid literal *)
-      mutable tag_stack      : string list;                  (* stack of entered tags *)
+      mutable elem_stack     : string list;                  (* stack of entered tags *)
       mutable attr_stack     : (string * string) list;       (* stack of parsed attributes for the currently open tag *)
       mutable attr_set       : StringSet.t;                  (* set of attr names used to detect duplicates *)
       mutable quote_char     : char;                         (* quote char for attribute value, and system/public literal *)
@@ -215,7 +215,7 @@ let create_parser client  =
     doc_name       = None;
     sys_literal    = None;
     pubid_literal  = None;
-    tag_stack      = [];
+    elem_stack     = [];
     attr_stack     = [];
     attr_set       = StringSet.empty;
     quote_char     = '"';
@@ -490,7 +490,7 @@ let print_state p =
 	    Printf.sprintf "AttrValue_EntityRef(%s, %s, %s)" n (rev_clist_to_string clist) (rev_clist_to_string erlist)
       end
   | XML_Parse_Start_Tag_Slash ->
-      Printf.sprintf "StartTagSlash(%s)" (List.hd p.tag_stack)
+      Printf.sprintf "StartTagSlash(%s)" (List.hd p.elem_stack)
   | XML_Parse_Tag_Content content ->
       begin
 	match content with
@@ -889,7 +889,7 @@ let parse_char p c =
 	begin
 	  p.client#xml_proc_instr_handler instr text;
 	  p.parse_state <-
-	    if p.tag_stack = [] then
+	    if p.elem_stack = [] then
 	      XML_Parse_Initial
 	    else
 	      XML_Parse_Tag_Content (XML_Content_Normal [])
@@ -906,7 +906,7 @@ let parse_char p c =
 	   and it should be in the prolog (i.e. the tag stack should be
 	   empty).
 	 *)
-	if p.doc_name = None && p.tag_stack = [] then
+	if p.doc_name = None && p.elem_stack = [] then
 	  p.parse_state <- XML_Parse_DOCTYPE_D
 	else
 	  raise (XMLParseError (loc, "Invalid tag"))
@@ -937,7 +937,7 @@ let parse_char p c =
 	begin
 	  p.client#xml_comment_handler (rev_clist_to_string clist);
 	  p.parse_state <-
-	    if p.tag_stack = [] then
+	    if p.elem_stack = [] then
 	      XML_Parse_Initial
 	    else
 	      XML_Parse_Tag_Content (XML_Content_Normal [])
@@ -1157,19 +1157,19 @@ let parse_char p c =
   | XML_Parse_Start_Tag clist ->
       if is_space c then
 	begin
-	  p.tag_stack <- rev_clist_to_string clist :: p.tag_stack;
+	  p.elem_stack <- rev_clist_to_string clist :: p.elem_stack;
 	  p.parse_state <- XML_Parse_Attr_Name []
 	end
       else if c = '>' then
 	let start_tag = rev_clist_to_string clist in
 	begin
-	  p.tag_stack <- start_tag :: p.tag_stack;
+	  p.elem_stack <- start_tag :: p.elem_stack;
 	  p.client#xml_start_handler start_tag [];
 	  p.parse_state <- XML_Parse_Tag_Content (XML_Content_Normal [])
 	end
       else if c = '/' then
 	begin
-	  p.tag_stack <- rev_clist_to_string clist :: p.tag_stack;
+	  p.elem_stack <- rev_clist_to_string clist :: p.elem_stack;
 	  p.parse_state <- XML_Parse_Start_Tag_Slash
 	end
       else if valid_name_char c then
@@ -1184,7 +1184,7 @@ let parse_char p c =
 	  p.parse_state <- XML_Parse_Start_Tag_Slash
 	else if c = '>' then
 	  begin
-	    p.client#xml_start_handler (List.hd p.tag_stack) (List.rev p.attr_stack);
+	    p.client#xml_start_handler (List.hd p.elem_stack) (List.rev p.attr_stack);
 	    p.attr_stack <- [];
 	    p.attr_set <- StringSet.empty;
 	    p.parse_state <- XML_Parse_Tag_Content (XML_Content_Normal [])
@@ -1363,12 +1363,13 @@ let parse_char p c =
   | XML_Parse_Start_Tag_Slash ->
       if c = '>' then
 	begin
-	  p.client#xml_start_handler (List.hd p.tag_stack) (List.rev p.attr_stack);
+	  p.client#xml_start_handler (List.hd p.elem_stack) (List.rev p.attr_stack);
 	  p.attr_stack <- [];
 	  p.attr_set <- StringSet.empty;
-	  p.client#xml_end_handler (List.hd p.tag_stack);
-	  p.tag_stack <- List.tl p.tag_stack;
-	  p.in_epilog <- if p.tag_stack = [] then true else false;
+	  if not p.end_parsing then
+	    p.client#xml_end_handler (List.hd p.elem_stack);
+	  p.elem_stack <- List.tl p.elem_stack;
+	  p.in_epilog <- if p.elem_stack = [] then true else false;
 	  p.parse_state <- if p.in_epilog then XML_Parse_Initial else XML_Parse_Tag_Content (XML_Content_Normal [])
 	end
       else
@@ -1507,13 +1508,13 @@ let parse_char p c =
 	  p.parse_state <- XML_Parse_End_Tag (c :: clist)
       else if c = '>' then
 	let end_tag = rev_clist_to_string clist in
-	if p.tag_stack = [] || (List.hd p.tag_stack) <> end_tag then
+	if p.elem_stack = [] || (List.hd p.elem_stack) <> end_tag then
 	  raise (XMLParseError (loc, "Mismatched end tag"))
 	else
 	  begin
-	    p.tag_stack <- List.tl p.tag_stack;
+	    p.elem_stack <- List.tl p.elem_stack;
 	    p.client#xml_end_handler end_tag;
-	    p.in_epilog <- if p.tag_stack = [] then true else false;
+	    p.in_epilog <- if p.elem_stack = [] then true else false;
 	    p.parse_state <- if p.in_epilog then XML_Parse_Initial else XML_Parse_Tag_Content (XML_Content_Normal [])
 	  end
       else if is_space c then
@@ -1525,13 +1526,13 @@ let parse_char p c =
   | XML_Parse_End_Tag_Space clist ->
       if c = '>' then
 	let end_tag = rev_clist_to_string clist in
-	if p.tag_stack = [] || (List.hd p.tag_stack) <> end_tag then
+	if p.elem_stack = [] || (List.hd p.elem_stack) <> end_tag then
 	  raise (XMLParseError (loc, "Mismatched end tag"))
 	else
 	  begin
-	    p.tag_stack <- List.tl p.tag_stack;
+	    p.elem_stack <- List.tl p.elem_stack;
 	    p.client#xml_end_handler end_tag;
-	    p.in_epilog <- if p.tag_stack = [] then true else false;
+	    p.in_epilog <- if p.elem_stack = [] then true else false;
 	    p.parse_state <- if p.in_epilog then XML_Parse_Initial else XML_Parse_Tag_Content (XML_Content_Normal [])
 	  end
       else if not (is_space c) then
@@ -1564,7 +1565,7 @@ let parse_char p c =
   | XML_Parse_Start_CDATA_CDATA ->
       if c = '[' then
 	(* CData sections can only appear as element content *)
-	if p.tag_stack = [] then
+	if p.elem_stack = [] then
 	  raise (XMLParseError (loc, "Invalid prolog"))
 	else
 	  p.parse_state <- XML_Parse_CDATA []
@@ -1587,7 +1588,7 @@ let parse_char p c =
 	begin
 	  p.client#xml_cdata_handler (rev_clist_to_string clist);
 	  p.parse_state <-
-	    if p.tag_stack = [] then
+	    if p.elem_stack = [] then
 	      XML_Parse_Initial
 	    else
 	      XML_Parse_Tag_Content (XML_Content_Normal [])
@@ -1627,7 +1628,7 @@ let parse p s is_last_buffer =
     incr i
   done;
   if is_last_buffer then
-    if p.tag_stack <> [] then
+    if p.elem_stack <> [] then
       raise (XMLParseError (((p.line, p.col) : xml_parse_loc), "Unmatched start tags remain"))
     else if p.parse_state <> XML_Parse_Initial then
       raise (XMLParseError (((p.line, p.col) : xml_parse_loc), "Unexpected document end"))

@@ -3,17 +3,17 @@
  *)
 
 
-type t;;
+type t
 
 type xml_external_id =
   | XMLSystemId of string
-  | XMLPublicId of string * string;;
+  | XMLPublicId of string * string
 
-type xml_parse_loc = int * int;;
+type xml_parse_loc = int * int
 
-type xml_parse_error_info = xml_parse_loc * string;;
+type xml_parse_error_info = xml_parse_loc * string
 
-exception XMLParseError of xml_parse_error_info;;
+exception XMLParseError of xml_parse_error_info
 
 class virtual xml_parser_client_interface :
   object
@@ -23,14 +23,14 @@ class virtual xml_parser_client_interface :
     method virtual xml_end_handler        : string -> unit
     method virtual xml_cdata_handler      : string -> unit
     method virtual xml_comment_handler    : string -> unit
-  end;;
+  end
 
-val create_parser : xml_parser_client_interface -> t;;
+val create_parser : xml_parser_client_interface -> t
 
-val end_parsing : t -> unit;;
+val end_parsing : t -> unit
 
-val cur_line : t -> int;;
+val cur_line : t -> int
 
-val cur_column : t -> int;;
+val cur_column : t -> int
 
-val parse : t -> string -> bool -> unit;;
+val parse : t -> string -> bool -> unit

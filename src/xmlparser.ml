@@ -89,6 +89,45 @@ type xml_parser_state =
   | XML_Parse_PI_Space of string
   | XML_Parse_PI of string * char list
   | XML_Parse_PI_Q of string * string
+  | XML_Parse_XMLDecl_XML_Space
+  | XML_Parse_XMLDecl_Version_V
+  | XML_Parse_XMLDecl_Version_Ve
+  | XML_Parse_XMLDecl_Version_Ver
+  | XML_Parse_XMLDecl_Version_Vers
+  | XML_Parse_XMLDecl_Version_Versi
+  | XML_Parse_XMLDecl_Version_Versio
+  | XML_Parse_XMLDecl_Version_Version
+  | XML_Parse_XMLDecl_Version_eq
+  | XML_Parse_XMLDecl_Version of char list
+  | XML_Parse_XMLDecl_Version_End
+  | XML_Parse_XMLDecl_Version_Space
+  | XML_Parse_XMLDecl_Encoding_E
+  | XML_Parse_XMLDecl_Encoding_En
+  | XML_Parse_XMLDecl_Encoding_Enc
+  | XML_Parse_XMLDecl_Encoding_Enco
+  | XML_Parse_XMLDecl_Encoding_Encod
+  | XML_Parse_XMLDecl_Encoding_Encodi
+  | XML_Parse_XMLDecl_Encoding_Encodin
+  | XML_Parse_XMLDecl_Encoding_Encoding
+  | XML_Parse_XMLDecl_Encoding_eq
+  | XML_Parse_XMLDecl_Encoding of char list
+  | XML_Parse_XMLDecl_Encoding_End
+  | XML_Parse_XMLDecl_Encoding_Space
+  | XML_Parse_XMLDecl_Standalone_S
+  | XML_Parse_XMLDecl_Standalone_St
+  | XML_Parse_XMLDecl_Standalone_Sta
+  | XML_Parse_XMLDecl_Standalone_Stan
+  | XML_Parse_XMLDecl_Standalone_Stand
+  | XML_Parse_XMLDecl_Standalone_Standa
+  | XML_Parse_XMLDecl_Standalone_Standal
+  | XML_Parse_XMLDecl_Standalone_Standalo
+  | XML_Parse_XMLDecl_Standalone_Standalon
+  | XML_Parse_XMLDecl_Standalone_Standalone
+  | XML_Parse_XMLDecl_Standalone_eq
+  | XML_Parse_XMLDecl_Standalone of char list
+  | XML_Parse_XMLDecl_Standalone_End
+  | XML_Parse_XMLDecl_Standalone_Space
+  | XML_Parse_XMLDecl_Q
   | XML_Parse_Start_Bang
   | XML_Parse_Start_Bang_Dash
   | XML_Parse_Comment of char list
@@ -146,37 +185,45 @@ type xml_parser_state =
 module StringSet = Set.Make (struct type t = string let compare = String.compare end);;
 
 type t =
-    { mutable line          : int;                          (* current line number of input *)
-      mutable col           : int;                          (* current column number of input *)
-      mutable eol           : eol_state;                    (* end-of-line handling *)
-      mutable doc_name      : string option;                (* Doctype name *)
-      mutable sys_literal   : string option;                (* Doctype system literal *)
-      mutable pubid_literal : string option;                (* Doctype pubid literal *)
-      mutable tag_stack     : string list;                  (* stack of entered tags *)
-      mutable attr_stack    : (string * string) list;       (* stack of parsed attributes for the currently open tag *)
-      mutable attr_set      : StringSet.t;                  (* set of attr names used to detect duplicates *)
-      mutable quote_char    : char;                         (* quote char for attribute value, and system/public literal *)
-      mutable parse_state   : xml_parser_state;             (* current parsing state *)
-      mutable in_epilog     : bool;                         (* whether the end of element tree has been passed *)
-      mutable end_parsing   : bool;                         (* whether parsing is done, and no callbacks should be called *)
-      mutable client        : xml_parser_client_interface;  (* client interface for parsing event handlers *)
+    { mutable line           : int;                          (* current line number of input *)
+      mutable col            : int;                          (* current column number of input *)
+      mutable eol            : eol_state;                    (* end-of-line handling *)
+      mutable version        : string option;                (* XML version *)
+      mutable encoding       : string option;                (* XML encoding *)
+      mutable standalone     : bool option;                  (* Standalone declaration *)
+      mutable doc_name       : string option;                (* Doctype name *)
+      mutable sys_literal    : string option;                (* Doctype system literal *)
+      mutable pubid_literal  : string option;                (* Doctype pubid literal *)
+      mutable tag_stack      : string list;                  (* stack of entered tags *)
+      mutable attr_stack     : (string * string) list;       (* stack of parsed attributes for the currently open tag *)
+      mutable attr_set       : StringSet.t;                  (* set of attr names used to detect duplicates *)
+      mutable quote_char     : char;                         (* quote char for attribute value, and system/public literal *)
+      mutable parse_state    : xml_parser_state;             (* current parsing state *)
+      mutable expect_xmldecl : bool;                         (* whether an XMLDecl is valid here *)
+      mutable in_epilog      : bool;                         (* whether the end of element tree has been passed *)
+      mutable end_parsing    : bool;                         (* whether parsing is done, and no callbacks should be called *)
+      mutable client         : xml_parser_client_interface;  (* client interface for parsing event handlers *)
     }
 
 let create_parser client  =
-  { line          = 1;
-    col           = 0;
-    eol           = EOL_None;
-    doc_name      = None;
-    sys_literal   = None;
-    pubid_literal = None;
-    tag_stack     = [];
-    attr_stack    = [];
-    attr_set      = StringSet.empty;
-    quote_char    = '"';
-    parse_state   = XML_Parse_Initial;
-    in_epilog     = false;
-    end_parsing   = false;
-    client        = client;
+  { line           = 1;
+    col            = 0;
+    eol            = EOL_None;
+    version        = None;
+    encoding       = None;
+    standalone     = None;
+    doc_name       = None;
+    sys_literal    = None;
+    pubid_literal  = None;
+    tag_stack      = [];
+    attr_stack     = [];
+    attr_set       = StringSet.empty;
+    quote_char     = '"';
+    parse_state    = XML_Parse_Initial;
+    expect_xmldecl = true;
+    in_epilog      = false;
+    end_parsing    = false;
+    client         = client;
   }
 
 let end_parsing p =
@@ -192,6 +239,24 @@ let is_space = function
   | ' ' | '\t' | '\r' | '\n' -> true
   | _ -> false
 
+let valid_version_char = function
+  | '0' .. '9' -> true
+  | '.' -> true
+  | _ -> false
+
+let valid_first_encname_char = function
+  | 'A' .. 'Z' | 'a' .. 'z' -> true
+  | _ -> false
+
+let valid_encname_char = function
+  | '0' .. '9' -> true
+  | '.' | '_' | '-' -> true
+  | c -> valid_first_encname_char c
+
+let valid_standalone_char = function
+  | 'a' .. 'z' -> true
+  | _ -> false
+
 let valid_first_name_char = function
   | ':' | '_' -> true
   | 'A' .. 'Z' | 'a' .. 'z' -> true
@@ -200,7 +265,7 @@ let valid_first_name_char = function
 let valid_name_char = function
   | '-' | '.' -> true
   | '0' .. '9' -> true
-  | c -> if valid_first_name_char c then true else false
+  | c -> valid_first_name_char c
 
 let valid_pubid_char = function
   | 'A' .. 'Z' | 'a' .. 'z' | '0' .. '9'
@@ -238,6 +303,84 @@ let print_state p =
       Printf.sprintf "ProcInstr(%s, %s)" instr (rev_clist_to_string clist)
   | XML_Parse_PI_Q (instr, text) ->
       Printf.sprintf "ProcInstrQ(%s, %s)" instr text
+  | XML_Parse_XMLDecl_XML_Space ->
+      "XMLDecl"
+  | XML_Parse_XMLDecl_Version_V ->
+      "XMLDecl(V)"
+  | XML_Parse_XMLDecl_Version_Ve ->
+      "XMLDecl(Ve)"
+  | XML_Parse_XMLDecl_Version_Ver ->
+      "XMLDecl(Ver)"
+  | XML_Parse_XMLDecl_Version_Vers ->
+      "XMLDecl(Vers)"
+  | XML_Parse_XMLDecl_Version_Versi ->
+      "XMLDecl(Versi)"
+  | XML_Parse_XMLDecl_Version_Versio ->
+      "XMLDecl(Versio)"
+  | XML_Parse_XMLDecl_Version_Version ->
+      "XMLDecl(Version)"
+  | XML_Parse_XMLDecl_Version_eq ->
+      "XMLDecl(Version=)"
+  | XML_Parse_XMLDecl_Version clist ->
+      Printf.sprintf "XMLDecl(Version=%s)" (rev_clist_to_string clist)
+  | XML_Parse_XMLDecl_Version_End ->
+      "XMLDecl(VersionEnd)"
+  | XML_Parse_XMLDecl_Version_Space ->
+      "XMLDecl(VersionSpace)"
+  | XML_Parse_XMLDecl_Encoding_E ->
+      "XMLDecl(E)"
+  | XML_Parse_XMLDecl_Encoding_En ->
+      "XMLDecl(En)"
+  | XML_Parse_XMLDecl_Encoding_Enc ->
+      "XMLDecl(Enc)"
+  | XML_Parse_XMLDecl_Encoding_Enco ->
+      "XMLDecl(Enco)"
+  | XML_Parse_XMLDecl_Encoding_Encod ->
+      "XMLDecl(Encod)"
+  | XML_Parse_XMLDecl_Encoding_Encodi ->
+      "XMLDecl(Encodi)"
+  | XML_Parse_XMLDecl_Encoding_Encodin ->
+      "XMLDecl(Encodin)"
+  | XML_Parse_XMLDecl_Encoding_Encoding ->
+      "XMLDecl(Encoding)"
+  | XML_Parse_XMLDecl_Encoding_eq ->
+      "XMLDecl(Encoding=)"
+  | XML_Parse_XMLDecl_Encoding clist ->
+      Printf.sprintf "XMLDecl(Encoding=%s)" (rev_clist_to_string clist)
+  | XML_Parse_XMLDecl_Encoding_End ->
+      "XMLDecl(EncodingEnd)"
+  | XML_Parse_XMLDecl_Encoding_Space ->
+      "XMLDecl(EncodingSpace)"
+  | XML_Parse_XMLDecl_Standalone_S ->
+      "XMLDecl(S)"
+  | XML_Parse_XMLDecl_Standalone_St ->
+      "XMLDecl(St)"
+  | XML_Parse_XMLDecl_Standalone_Sta ->
+      "XMLDecl(Sta)"
+  | XML_Parse_XMLDecl_Standalone_Stan ->
+      "XMLDecl(Stan)"
+  | XML_Parse_XMLDecl_Standalone_Stand ->
+      "XMLDecl(Stand)"
+  | XML_Parse_XMLDecl_Standalone_Standa ->
+      "XMLDecl(Standa)"
+  | XML_Parse_XMLDecl_Standalone_Standal ->
+      "XMLDecl(Standal)"
+  | XML_Parse_XMLDecl_Standalone_Standalo ->
+      "XMLDecl(Standalo)"
+  | XML_Parse_XMLDecl_Standalone_Standalon ->
+      "XMLDecl(Standalon)"
+  | XML_Parse_XMLDecl_Standalone_Standalone ->
+      "XMLDecl(Standalone)"
+  | XML_Parse_XMLDecl_Standalone_eq ->
+      "XMLDecl(Standalone=)"
+  | XML_Parse_XMLDecl_Standalone clist ->
+      Printf.sprintf "XMLDecl(Standalone=%s)" (rev_clist_to_string clist)
+  | XML_Parse_XMLDecl_Standalone_End ->
+      "XMLDecl(StandaloneEnd)"
+  | XML_Parse_XMLDecl_Standalone_Space ->
+      "XMLDecl(StandaloneSpace)"
+  | XML_Parse_XMLDecl_Q ->
+      "XMLDecl_Q"
   | XML_Parse_Start_Bang ->
       "StartBang"
   | XML_Parse_Start_Bang_Dash ->
@@ -394,7 +537,7 @@ let print_state p =
       Printf.sprintf "CDATA]](%s)" (rev_clist_to_string clist)
 
 let parse_char p c =
-(*  Printf.printf "State = '%s' Input = '%c'\n" (print_state p) c; *)
+  Printf.printf "State = '%s' Input = '%c'\n" (print_state p) c;
   let loc = ((p.line, p.col) : xml_parse_loc) in
   let get_docname p =
     match p.doc_name with
@@ -403,17 +546,20 @@ let parse_char p c =
   in
   match p.parse_state with
   | XML_Parse_Initial ->
-      if not (is_space c) then
-	begin
-	  match c with
-	  | '<' -> p.parse_state <- XML_Parse_Start
-	  |  _  -> raise (XMLParseError (loc, "Unexpected char outside element content"))
-	end
+      if c = '<' then
+	p.parse_state <- XML_Parse_Start
+      else if is_space c then
+	()
+      else
+	raise (XMLParseError (loc, "Invalid char"))
   | XML_Parse_Start ->
       if c = '?' then
 	p.parse_state <- XML_Parse_Start_PI_Target []
       else if c = '!' then
-	p.parse_state <- XML_Parse_Start_Bang
+	begin
+	  p.expect_xmldecl <- false;
+	  p.parse_state <- XML_Parse_Start_Bang
+	end
       else if c = '/' then
 	if p.in_epilog then
 	  raise (XMLParseError (loc, "Invalid epilog"))
@@ -423,9 +569,277 @@ let parse_char p c =
 	if p.in_epilog then
 	  raise (XMLParseError (loc, "Invalid epilog"))
 	else
-	  p.parse_state <- XML_Parse_Start_Tag [ c ]
+	  begin
+	    p.expect_xmldecl <- false;
+	    p.parse_state <- XML_Parse_Start_Tag [ c ]
+	  end
       else
 	raise (XMLParseError (loc, "Invalid first character in start tag"))
+  | XML_Parse_XMLDecl_XML_Space ->
+      if is_space c then
+	()
+      else if c = 'v' then
+	p.parse_state <- XML_Parse_XMLDecl_Version_V
+      else
+	raise (XMLParseError (loc, "Invalid XML declaration"))
+  | XML_Parse_XMLDecl_Version_V ->
+      if c = 'e' then
+	p.parse_state <- XML_Parse_XMLDecl_Version_Ve
+      else
+	raise (XMLParseError (loc, "Invalid XML declaration"))
+  | XML_Parse_XMLDecl_Version_Ve ->
+      if c = 'r' then
+	p.parse_state <- XML_Parse_XMLDecl_Version_Ver
+      else
+	raise (XMLParseError (loc, "Invalid XML declaration"))
+  | XML_Parse_XMLDecl_Version_Ver ->
+      if c = 's' then
+	p.parse_state <- XML_Parse_XMLDecl_Version_Vers
+      else
+	raise (XMLParseError (loc, "Invalid XML declaration"))
+  | XML_Parse_XMLDecl_Version_Vers ->
+      if c = 'i' then
+	p.parse_state <- XML_Parse_XMLDecl_Version_Versi
+      else
+	raise (XMLParseError (loc, "Invalid XML declaration"))
+  | XML_Parse_XMLDecl_Version_Versi ->
+      if c = 'o' then
+	p.parse_state <- XML_Parse_XMLDecl_Version_Versio
+      else
+	raise (XMLParseError (loc, "Invalid XML declaration"))
+  | XML_Parse_XMLDecl_Version_Versio ->
+      if c = 'n' then
+	p.parse_state <- XML_Parse_XMLDecl_Version_Version
+      else
+	raise (XMLParseError (loc, "Invalid XML declaration"))
+  | XML_Parse_XMLDecl_Version_Version ->
+      if c = '=' then
+	p.parse_state <- XML_Parse_XMLDecl_Version_eq
+      else if is_space c then
+	()
+      else
+	raise (XMLParseError (loc, "Invalid XML declaration"))
+  | XML_Parse_XMLDecl_Version_eq ->
+      if c = '\'' || c = '"' then
+	begin
+	  p.quote_char <- c;
+	  p.parse_state <- XML_Parse_XMLDecl_Version []
+	end
+      else if is_space c then
+	()
+      else
+	raise (XMLParseError (loc, "Invalid XML version declaration"))
+  | XML_Parse_XMLDecl_Version clist ->
+      if c = p.quote_char then
+	let version = rev_clist_to_string clist in
+	if version = "1.0" || version = "1.1" then
+	  begin
+	    p.version <- Some version;
+	    p.parse_state <- XML_Parse_XMLDecl_Version_End
+	  end
+	else
+	  raise (XMLParseError (loc, "Invalid XML version declaration"))
+      else if c = '\'' || c = '"' then
+	raise (XMLParseError (loc, "Invalid XML version declaration"))
+      else if valid_version_char c then
+	p.parse_state <- XML_Parse_XMLDecl_Version (c :: clist)
+      else
+	raise (XMLParseError (loc, "Invalid XML version declaration"))
+  | XML_Parse_XMLDecl_Version_End ->
+      if c = '?' then
+	p.parse_state <- XML_Parse_XMLDecl_Q
+      else if is_space c then
+	p.parse_state <- XML_Parse_XMLDecl_Version_Space
+      else
+	raise (XMLParseError (loc, "Invalid XML declaration"))
+  | XML_Parse_XMLDecl_Version_Space ->
+      if c = 'e' then
+	p.parse_state <- XML_Parse_XMLDecl_Encoding_E
+      else if c = 's' then
+	p.parse_state <- XML_Parse_XMLDecl_Standalone_S
+      else if c = '?' then
+	p.parse_state <- XML_Parse_XMLDecl_Q
+      else if is_space c then
+	()
+      else
+	raise (XMLParseError (loc, "Invalid XML declaration"))
+  | XML_Parse_XMLDecl_Encoding_E ->
+      if c = 'n' then
+	p.parse_state <- XML_Parse_XMLDecl_Encoding_En
+      else
+	raise (XMLParseError (loc, "Invalid XML declaration"))
+  | XML_Parse_XMLDecl_Encoding_En ->
+      if c = 'c' then
+	p.parse_state <- XML_Parse_XMLDecl_Encoding_Enc
+      else
+	raise (XMLParseError (loc, "Invalid XML declaration"))
+  | XML_Parse_XMLDecl_Encoding_Enc ->
+      if c = 'o' then
+	p.parse_state <- XML_Parse_XMLDecl_Encoding_Enco
+      else
+	raise (XMLParseError (loc, "Invalid XML declaration"))
+  | XML_Parse_XMLDecl_Encoding_Enco ->
+      if c = 'd' then
+	p.parse_state <- XML_Parse_XMLDecl_Encoding_Encod
+      else
+	raise (XMLParseError (loc, "Invalid XML declaration"))
+  | XML_Parse_XMLDecl_Encoding_Encod ->
+      if c = 'i' then
+	p.parse_state <- XML_Parse_XMLDecl_Encoding_Encodi
+      else
+	raise (XMLParseError (loc, "Invalid XML declaration"))
+  | XML_Parse_XMLDecl_Encoding_Encodi ->
+      if c = 'n' then
+	p.parse_state <- XML_Parse_XMLDecl_Encoding_Encodin
+      else
+	raise (XMLParseError (loc, "Invalid XML declaration"))
+  | XML_Parse_XMLDecl_Encoding_Encodin ->
+      if c = 'g' then
+	p.parse_state <- XML_Parse_XMLDecl_Encoding_Encoding
+      else
+	raise (XMLParseError (loc, "Invalid XML declaration"))
+  | XML_Parse_XMLDecl_Encoding_Encoding ->
+      if c = '=' then
+	p.parse_state <- XML_Parse_XMLDecl_Encoding_eq
+      else if is_space c then
+	()
+      else
+	raise (XMLParseError (loc, "Invalid XML declaration"))
+  | XML_Parse_XMLDecl_Encoding_eq ->
+      if c = '\'' || c = '"' then
+	begin
+	  p.quote_char <- c;
+	  p.parse_state <- XML_Parse_XMLDecl_Encoding []
+	end
+      else if is_space c then
+	()
+      else
+	raise (XMLParseError (loc, "Invalid XML declaration"))
+  | XML_Parse_XMLDecl_Encoding clist ->
+      if c = p.quote_char then
+	begin
+	  p.encoding <- Some (rev_clist_to_string clist);
+	  p.parse_state <- XML_Parse_XMLDecl_Encoding_End
+	end
+      else if clist = [] && valid_first_encname_char c then
+	p.parse_state <- XML_Parse_XMLDecl_Encoding [ c ]
+      else if clist <> [] && valid_encname_char c then
+	p.parse_state <- XML_Parse_XMLDecl_Encoding (c :: clist)
+      else
+	raise (XMLParseError (loc, "Invalid XML encoding declaration"))
+  | XML_Parse_XMLDecl_Encoding_End ->
+      if c = '?' then
+	p.parse_state <- XML_Parse_XMLDecl_Q
+      else if is_space c then
+	p.parse_state <- XML_Parse_XMLDecl_Encoding_Space
+      else
+	raise (XMLParseError (loc, "Invalid XML declaration"))
+  | XML_Parse_XMLDecl_Encoding_Space ->
+      if c = 's' then
+	p.parse_state <- XML_Parse_XMLDecl_Standalone_S
+      else if c = '?' then
+	p.parse_state <- XML_Parse_XMLDecl_Q
+      else if is_space c then
+	()
+      else
+	raise (XMLParseError (loc, "Invalid XML declaration"))
+  | XML_Parse_XMLDecl_Standalone_S ->
+      if c = 't' then
+	p.parse_state <- XML_Parse_XMLDecl_Standalone_St
+      else
+	raise (XMLParseError (loc, "Invalid XML declaration"))
+  | XML_Parse_XMLDecl_Standalone_St ->
+      if c = 'a' then
+	p.parse_state <- XML_Parse_XMLDecl_Standalone_Sta
+      else
+	raise (XMLParseError (loc, "Invalid XML declaration"))
+  | XML_Parse_XMLDecl_Standalone_Sta ->
+      if c = 'n' then
+	p.parse_state <- XML_Parse_XMLDecl_Standalone_Stan
+      else
+	raise (XMLParseError (loc, "Invalid XML declaration"))
+  | XML_Parse_XMLDecl_Standalone_Stan ->
+      if c = 'd' then
+	p.parse_state <- XML_Parse_XMLDecl_Standalone_Stand
+      else
+	raise (XMLParseError (loc, "Invalid XML declaration"))
+  | XML_Parse_XMLDecl_Standalone_Stand ->
+      if c = 'a' then
+	p.parse_state <- XML_Parse_XMLDecl_Standalone_Standa
+      else
+	raise (XMLParseError (loc, "Invalid XML declaration"))
+  | XML_Parse_XMLDecl_Standalone_Standa ->
+      if c = 'l' then
+	p.parse_state <- XML_Parse_XMLDecl_Standalone_Standal
+      else
+	raise (XMLParseError (loc, "Invalid XML declaration"))
+  | XML_Parse_XMLDecl_Standalone_Standal ->
+      if c = 'o' then
+	p.parse_state <- XML_Parse_XMLDecl_Standalone_Standalo
+      else
+	raise (XMLParseError (loc, "Invalid XML declaration"))
+  | XML_Parse_XMLDecl_Standalone_Standalo ->
+      if c = 'n' then
+	p.parse_state <- XML_Parse_XMLDecl_Standalone_Standalon
+      else
+	raise (XMLParseError (loc, "Invalid XML declaration"))
+  | XML_Parse_XMLDecl_Standalone_Standalon ->
+      if c = 'e' then
+	p.parse_state <- XML_Parse_XMLDecl_Standalone_Standalone
+      else
+	raise (XMLParseError (loc, "Invalid XML declaration"))
+  | XML_Parse_XMLDecl_Standalone_Standalone ->
+      if c = '=' then
+	p.parse_state <- XML_Parse_XMLDecl_Standalone_eq
+      else if is_space c then
+	()
+      else
+	raise (XMLParseError (loc, "Invalid XML declaration"))
+  | XML_Parse_XMLDecl_Standalone_eq ->
+      if c = '\'' || c = '"' then
+	begin
+	  p.quote_char <- c;
+	  p.parse_state <- XML_Parse_XMLDecl_Standalone []
+	end
+      else if is_space c then
+	()
+      else
+	raise (XMLParseError (loc, "Invalid XML declaration"))
+  | XML_Parse_XMLDecl_Standalone clist ->
+      if c = p.quote_char then
+	let standalone = rev_clist_to_string clist in
+	if standalone = "yes" then
+	  p.standalone <- Some true
+	else if standalone = "no" then
+	  p.standalone <- Some false
+	else
+	  raise (XMLParseError (loc, "Invalid XML standalone declaration"));
+	p.parse_state <- XML_Parse_XMLDecl_Standalone_End
+      else if c = '\'' || c = '"' then
+	raise (XMLParseError (loc, "Invalid XML standalone declaration"))
+      else if valid_standalone_char c then
+	p.parse_state <- XML_Parse_XMLDecl_Standalone (c :: clist)
+      else
+	raise (XMLParseError (loc, "Invalid XML standalone declaration"));
+  | XML_Parse_XMLDecl_Standalone_End ->
+      if c = '?' then
+	p.parse_state <- XML_Parse_XMLDecl_Q
+      else if is_space c then
+	p.parse_state <- XML_Parse_XMLDecl_Standalone_Space
+      else
+	raise (XMLParseError (loc, "Invalid XML declaration"))
+  | XML_Parse_XMLDecl_Standalone_Space ->
+      if c = '?' then
+	p.parse_state <- XML_Parse_XMLDecl_Q
+      else if is_space c then
+	()
+      else
+	raise (XMLParseError (loc, "Invalid XML declaration"))
+  | XML_Parse_XMLDecl_Q ->
+      if c = '>' then
+	p.parse_state <- XML_Parse_Initial
+      else
+	raise (XMLParseError (loc, "Invalid XML declaration"))
   | XML_Parse_Start_PI_Target clist ->
       if clist = [] then
 	if not (valid_first_name_char c) then
@@ -433,10 +847,29 @@ let parse_char p c =
 	else
 	  p.parse_state <- XML_Parse_Start_PI_Target (c :: clist)
       else
-	if is_space c then
-	  p.parse_state <- XML_Parse_PI_Space (rev_clist_to_string clist)
-	else if c = '?' then
-	  p.parse_state <- XML_Parse_PI_Q ((rev_clist_to_string clist), "")
+	if is_space c or c = '?' then
+	  let pi_target = rev_clist_to_string clist in
+	  match pi_target with
+	  | "xml" ->
+	      if p.expect_xmldecl || c <> '?' then
+		begin
+		  p.expect_xmldecl <- false;
+		  p.parse_state <- XML_Parse_XMLDecl_XML_Space
+		end
+	      else if p.expect_xmldecl then
+		raise (XMLParseError (loc, "Invalid XML declaration"))
+	      else
+		raise (XMLParseError (loc, "Invalid location for an XML declaration"))
+	  | "xmL" | "xMl" | "xML" | "Xml" | "XmL" | "XMl" | "XML" ->
+	      raise (XMLParseError (loc, "Invalid processing instruction target"))
+	  | _ ->
+	      begin
+		p.expect_xmldecl <- false;
+		if c = '?' then
+		  p.parse_state <- XML_Parse_PI_Q (pi_target, "")
+		else
+		  p.parse_state <- XML_Parse_PI_Space pi_target
+	      end
 	else if valid_name_char c then
 	  p.parse_state <- XML_Parse_Start_PI_Target (c :: clist)
 	else
@@ -901,7 +1334,7 @@ let parse_char p c =
 		    else if ccode = 0 then
 		      raise (XMLParseError (loc, "Invalid character reference"))
 		    else if ccode = int_of_char '<' then
-		      raise (XMLParseError (loc, "Illegal character < in attribute value"))			
+		      raise (XMLParseError (loc, "Illegal character < in attribute value"))
 		    else
 		      let ch = char_of_int ccode in
 		      if ch = '\t' || ch = '\n' || ch = '\r' then
@@ -1193,5 +1626,8 @@ let parse p s is_last_buffer =
       end;
     incr i
   done;
-  if is_last_buffer && p.tag_stack <> [] then
-    raise (XMLParseError (((p.line, p.col) : xml_parse_loc), "Unmatched start tags remain"))
+  if is_last_buffer then
+    if p.tag_stack <> [] then
+      raise (XMLParseError (((p.line, p.col) : xml_parse_loc), "Unmatched start tags remain"))
+    else if p.parse_state <> XML_Parse_Initial then
+      raise (XMLParseError (((p.line, p.col) : xml_parse_loc), "Unexpected document end"))

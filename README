@@ -1,11 +1,15 @@
 oxml is currently a simple incremental XML non-conforming parser with
-a SAX API.  
+a SAX API for applications written in OCaml.
 
 The parser was written in order to parse simple XML-based network
-protocols in asynchronous client-server applications.  Most of the
-complexity inducing portions of the XML specification has not been
-implemented, primarily support for DTD parsing and validation, 
-parsed external entities, and Unicode.
+protocols in asynchronous client-server applications.  The programming
+interface follows that of Expat/FXP, except for the use of OCaml
+objects.
+
+Most of the complexity inducing portions of the XML specification have
+not been implemented, primarily support for DTD parsing and
+validation, parsed external entities, and Unicode, since these
+features are not used in the applications the parser was written for.
 
 In particular, with reference to the XML 1.1 specification at
 http://www.w3.org/TR/2004/REC-xml11-20040204:

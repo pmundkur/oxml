@@ -56,19 +56,17 @@ let main () =
 	    close_in fl;
 	    Xmlparser.parse xp "" true
 	  end
-      | Xmlparser.XMLParseError ((lin, col), msg) ->
+      | _ as e ->
 	  begin
 	    close_in fl;
-	    Printf.eprintf "Parse error on line %d, col %d: %s\n" lin col msg
+	    raise e
 	  end
   with
   | Xmlparser.XMLParseError ((lin, col), msg) ->
-      Printf.eprintf "Parse error on line %d, col %d: %s\n" lin col msg
+      Printf.eprintf "Parse error on line %d, col %d of %s: %s\n" lin col Sys.argv.(1) msg;
+      exit 1
   | Failure f ->
-      Printf.eprintf "%s: %s" Sys.argv.(0) f;;
-
-try
-  main()
-with any ->
-  prerr_endline ("Uncaught exception: " ^ Printexc.to_string any);
-  exit 1;;
+      Printf.eprintf "%s: %s" Sys.argv.(0) f;
+      exit 1
+in
+  main ()

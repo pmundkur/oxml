@@ -1,0 +1,5 @@
+- more accurate errors for attribute names and start elements.
+  currently error positions will correspond to the end of the start
+  element.
+
+- a proper regression testing harness

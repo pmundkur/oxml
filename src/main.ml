@@ -16,15 +16,18 @@ class xml_client =
     method xml_proc_instr_handler instr text =
       Printf.printf "<?%s %s?>\n" instr text
     method xml_start_handler elem attrs =
+      let (nid, ns, lname) = elem in
       if attrs = [] then
-	Printf.printf "<%s>\n" elem
+	Printf.printf "<%d:%s:%s>\n" nid ns lname
       else
 	begin
-	  Printf.printf "<%s\n" elem;
-	  List.iter (function (a,v) -> Printf.printf "\t\t\t%s='%s'\n" a v) attrs;
+	  Printf.printf "<%d:%s:%s\n" nid ns lname;
+	  List.iter (fun ((nid, ns, lname), v) -> Printf.printf "\t\t\t%d:%s:%s='%s'\n" nid ns lname v) attrs;
 	  Printf.printf "\t>\n"
 	end
-    method xml_end_handler elem = Printf.printf "</%s>\n" elem
+    method xml_end_handler elem =
+      let (nid, ns, lname) = elem in
+      Printf.printf "</%d:%s:%s>\n" nid ns lname
     method xml_cdata_handler cdata = Printf.printf "CDATA(%s)\n" cdata
     method xml_comment_handler comm = Printf.printf "<!--%s-->\n" comm
   end;;

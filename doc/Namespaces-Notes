@@ -23,14 +23,21 @@
   modifications to the prefix-to-namespace-id map during a start-tag
   are undone at the corresponding end-tag.
 
-  The lexical scoping is implemented by maintaining a stack of prefix
-  maps, and a current prefix map.  The current prefix map is pushed
-  onto the prefix map stack on entry into a start tag, before the
-  modifications introduced by that start tag.  The modifications (if
-  any) when applied to the prefix map at the top of the stack provide
-  the current prefix map for the element's content.  When the end-tag
-  is reached, the prefix map on entry into the start tag is popped off
-  the stack and set as the current prefix map.
+  Default namespaces are treated similarly, since they too have
+  lexical scope.  Note that default namespaces only apply to
+  unprefixed elements in their scope; they cannot apply to unprefixed
+  attribute names.
+
+  The lexical scoping is implemented by maintaining a namespace-scope
+  stack, each element of which contains a prefix map and a
+  namespace-id corresponding to a default namespace.  The current
+  prefix map (and the current default namespace-id) is pushed onto the
+  stack on entry into a start tag, before the modifications introduced
+  by that start tag.  The modifications (if any) when applied to the
+  prefix map at the top of the stack provide the current prefix map
+  for the element's content.  When the end-tag is reached, the prefix
+  map and namespace-id on entry into the start tag are popped off the
+  stack and set as the current values.
 
   The id map is initialized with
   {1 -> "http://www.w3.org/XML/1998/namespace",
@@ -38,11 +45,6 @@
 
   The prefix map is correspondingly initialized as {"xml" -> 1,
   "xmlns" -> 2}.
-
-  Default namespaces are handled similarly, since they too have
-  lexical scope.  Note that default namespaces only apply to
-  unprefixed elements in their scope; they cannot apply to unprefixed
-  attribute names.
 
   The default namespace id is initialized to 0.
 
@@ -61,33 +63,27 @@
   - Parse the element tag into a (prefix, localname) pair.  When this
     is done:
 
-    - If we know immediately that this is going to be an empty tag
-      (i.e. the next char is '/'), we can optimize as follows:
+    - Save the (prefix, localname) pair into a variable of
+      the parser state.
 
-      - If there is a prefix, resolve it in the current prefix map.
+    - Push the current prefix map onto the namespace-scope stack (since
+      this is the best time to save it).
 
-      - If there is no prefix, then the element tag's id is the
-        current default namespace id.
+    Note that we cannot use a joint stack for the element tags and
+    the prefix maps, since we should only push the resolved element
+    tag onto the elem stack, and we cannot resolve it until we have
+    finished parsing the start tag.  If the elem stack contains
+    unresolved element tags, then they would have to be resolved
+    twice, once for the start-tag callback and once for the end-tag
+    callback, which requires a needless extra lookup.
 
-      - Call the start-tag and (possibly) the end-tag callbacks.
+    - In any case, initialize an empty AttrSet to detect duplicates in
+      resolved attribute names.
 
-    - Otherwise:
+    Possible optimization: If we know immediately that this is going
+    to be an empty tag (i.e. the next char is '/'), we can optimize
+    out the push and pop of the namespace-scope stack.
 
-      - Save the (prefix, localname) pair into a variable of
-        the parser state.
-
-      - Push the current prefix map onto the prefix map stack (since
-        this is the best time to save it).
-
-      - Set the current prefix map to None.
-
-      Note that we cannot use a joint stack for the element tags and
-      the prefix maps, since we should only push the resolved element
-      tag onto the elem stack, and we cannot resolve it until we have
-      finished parsing the start tag.  If the elem stack contains
-      unresolved element tags, then they would have to be resolved
-      twice, once for the start-tag callback and once for the end-tag
-      callback, which requires a needless extra lookup.
 
   - Parse any attribute name-value pairs into
     ((prefix, localname), value) tuples.  When the parsing of an
@@ -96,6 +92,19 @@
     - If the (prefix, localname) is (None, "xml") then:
 
     - If the (prefix, localname) is (None, "xmlns") then:
+
+      - This triggers default namespace handling.
+
+        If (0, "xmlns") is in AttrSet, this is a redeclaration of the
+        default namespace.
+
+        If value = "", the current default namespace is set to 0.  If
+        value is not "", it should be a valid IRI. If the value does
+        not already have an id in the id map, we use the next unused
+        id as the id to assign to value in the id map, and set the
+        current default namespace id to this id.
+
+        Then, (0, "xmlns") is added to the AttrSet.
 
     - If the (prefix, localname) is ("xml", localname) then:
 
@@ -119,7 +128,9 @@
         to value in the id map, and add {localname, id} to the prefix
         map.
 
-    - Otherwise (regardless whether the prefix is None or not None), 
+        Then, (0, "xmlns") is added to the AttrSet.
+
+    - Otherwise (regardless whether the prefix is None or not None),
       add ((prefix, localname), value) to the list of unresolved
       attributes, and continue parsing the next attribute if any.
       This list will be resolved all at once at the end of the start
@@ -127,24 +138,18 @@
 
   - When the end of the start-tag is reached:
 
-    - If the current prefix map is set to None, set it to *a copy* of 
-      the map at the top of the prefix map stack.
-
     - Retrieve the unresolved element tag, and resolve its prefix, if
       any.  If the prefix cannot be resolved, throw an error
       exception.  If there is no prefix, the current default namespace
       id must be used as the namespace id of the element tag.
 
-    - Create an empty set to contain the resolved attribute names.
-
-      Resolve each {prefix, localname} pair in the unresolved
+    - Resolve each {prefix, localname} pair in the unresolved
       attribute list.  If a prefix is not None, it is resolved in the
       same manner as an element prefix.  If it is None, the namespace
       id of 0 is used as the namespace id of the attribute.  After
       each attribute is resolved, check whether the resolved name is a
-      member in the set of resolved attribute names. If it is, throw
-      an error exception.  If it is not, add this resolved attribute
-      to that set.
+      member of AttrSet. If it is, throw an error exception.  If it is
+      not, add this resolved attribute to that set.
 
     - If this is not an empty-tag, push the resolved element tag onto
       the element stack (perhaps along with the list of resolved
@@ -154,12 +159,20 @@
     - Call the start-tag callback with the resolved element and
       attributes.
 
-    - Clear the list of unresolved attributes in the parser state.
-
+    - Clear the list of unresolved attributes in the parser state, and
+      the AttrSet.
 
   At the End-tag:
+  - Resolve the tagname, and match it against the element on top of
+    the element stack.
 
   - Pop the element tag from the element stack.
 
-  - Pop the prefix map at the top of the prefix map stack, and set it
-    to be the current prefix map.
+  - Pop the prefix map and default namespace-id at the top of the
+    namespace-scope stack, and set them to be the current values.
+
+  At an Empty-tag:
+
+
+  - As for an End-tag.  If the above optimization was implemented,
+    there would be no need to pop the element and namespace stacks.

@@ -8,12 +8,14 @@ type xml_parse_error_info = xml_parse_loc * string
 
 exception XMLParseError of xml_parse_error_info
 
+type xml_name = int * string * string
+
 class virtual xml_parser_client_interface =
   object
     method virtual xml_doctype_handler    : string -> xml_external_id option -> unit
     method virtual xml_proc_instr_handler : string -> string -> unit
-    method virtual xml_start_handler      : string -> (string * string) list -> unit
-    method virtual xml_end_handler        : string -> unit
+    method virtual xml_start_handler      : xml_name -> (xml_name * string) list -> unit
+    method virtual xml_end_handler        : xml_name -> unit
     method virtual xml_cdata_handler      : string -> unit
     method virtual xml_comment_handler    : string -> unit
   end
@@ -61,6 +63,10 @@ let rev_clist_to_string clist =
 type eol_state =
   | EOL_None
   | EOL_CR
+
+type xml_unresolved_name = string * string option
+
+type xml_resolved_name = int * string (* namespace-id, localname *)
 
 type xml_attvalue =
   | XML_Attr_Value_Normal of char list
@@ -162,16 +168,17 @@ type xml_parser_state =
   | XML_Parse_DOCTYPE_PubidLiteral_End
   | XML_Parse_DOCTYPE_PubidLiteral_Space
   | XML_Parse_DOCTYPE_ExternalId_Space
-  | XML_Parse_Start_Tag of char list
-  | XML_Parse_Attr_Name of char list
-  | XML_Parse_Attr_Name_Space of string
-  | XML_Parse_Attr_Name_Eq of string
-  | XML_Parse_Attr_Name_Eq_Space of string
-  | XML_Parse_Attr_Value of string * xml_attvalue
+  | XML_Parse_Start_Tag of char list * string option (* localname, prefix option *)
+  | XML_Parse_Attr_Name of char list * string option (* localname, prefix option *)
+  | XML_Parse_Attr_Name_Space of xml_unresolved_name
+  | XML_Parse_Attr_Name_Eq of xml_unresolved_name
+  | XML_Parse_Attr_Value of xml_unresolved_name * xml_attvalue
+  | XML_Parse_Attr_Value_End
+  | XML_Parse_Attr_Value_End_Space
   | XML_Parse_Start_Tag_Slash
   | XML_Parse_Tag_Content of xml_content
-  | XML_Parse_End_Tag of char list
-  | XML_Parse_End_Tag_Space of char list
+  | XML_Parse_End_Tag of char list * string option       (* localname, prefix option *)
+  | XML_Parse_End_Tag_Space
   | XML_Parse_Start_CondSect
   | XML_Parse_Start_CDATA_C
   | XML_Parse_Start_CDATA_CD
@@ -182,49 +189,92 @@ type xml_parser_state =
   | XML_Parse_CDATA_RBrack of char list
   | XML_Parse_CDATA_RBrack_RBrack of char list
 
-module StringSet = Set.Make (struct type t = string let compare = String.compare end);;
+module AttrSet = Set.Make (struct type t = xml_resolved_name let compare = compare end)
+
+module StringMap = Map.Make (struct type t = string let compare = compare end)
 
 type t =
-    { mutable line           : int;                          (* current line number of input *)
-      mutable col            : int;                          (* current column number of input *)
-      mutable eol            : eol_state;                    (* end-of-line handling *)
-      mutable version        : string option;                (* XML version *)
-      mutable encoding       : string option;                (* XML encoding *)
-      mutable standalone     : bool option;                  (* Standalone declaration *)
-      mutable doc_name       : string option;                (* Doctype name *)
-      mutable sys_literal    : string option;                (* Doctype system literal *)
-      mutable pubid_literal  : string option;                (* Doctype pubid literal *)
-      mutable elem_stack     : string list;                  (* stack of entered tags *)
-      mutable attr_stack     : (string * string) list;       (* stack of parsed attributes for the currently open tag *)
-      mutable attr_set       : StringSet.t;                  (* set of attr names used to detect duplicates *)
-      mutable quote_char     : char;                         (* quote char for attribute value, and system/public literal *)
-      mutable parse_state    : xml_parser_state;             (* current parsing state *)
-      mutable expect_xmldecl : bool;                         (* whether an XMLDecl is valid here *)
-      mutable in_epilog      : bool;                         (* whether the end of element tree has been passed *)
-      mutable end_parsing    : bool;                         (* whether parsing is done, and no callbacks should be called *)
-      mutable client         : xml_parser_client_interface;  (* client interface for parsing event handlers *)
+    { mutable line            : int;                       (* current line number of input *)
+      mutable col             : int;                       (* current column number of input *)
+      mutable eol             : eol_state;                 (* end-of-line handling *)
+      mutable version         : string option;             (* XML version *)
+      mutable encoding        : string option;             (* XML encoding *)
+      mutable standalone      : bool option;               (* Standalone declaration *)
+      mutable doc_name        : string option;             (* Doctype name *)
+      mutable sys_literal     : string option;             (* Doctype system literal *)
+      mutable pubid_literal   : string option;             (* Doctype pubid literal *)
+
+      mutable next_nspace_id  : int;                       (* next namespace id *)
+      mutable id_map          : string array;              (* the id map {id -> namespace} *)
+      mutable rev_id_map      : int StringMap.t;           (* the reverse map {namespace -> id} *)
+
+      mutable default_nspace  : int;                       (* id of current default namespace *)
+      mutable prefix_map      : int StringMap.t;           (* currently active prefix map {prefix -> id} *)
+
+      mutable nspace_stack    : (int StringMap.t * int) list;  (* stack of prefix maps and default namespace
+								  ids that represent namespace scopes corresponding
+								  to the elem_stack*)
+
+      mutable elem_stack      : xml_name list;             (* stack of entered elements *)
+
+      mutable cur_elem        : xml_unresolved_name;       (* current unresolved element name *)
+      mutable attr_list       : (xml_unresolved_name * string) list; (* stack of unresolved parsed attributes
+									for the currently open element *)
+
+      mutable attr_set        : AttrSet.t;                 (* set of resolved attr names, used to detect duplicates *)
+      mutable quote_char      : char;                      (* quote char for attribute value, and system/public literal *)
+      mutable parse_state     : xml_parser_state;          (* current parsing state *)
+      mutable expect_xmldecl  : bool;                      (* whether an XMLDecl is valid here *)
+      mutable in_epilog       : bool;                      (* whether the end of element tree has been passed *)
+      mutable end_parsing     : bool;                      (* whether parsing is done, and no callbacks should be called *)
+
+      mutable client          : xml_parser_client_interface;   (* client interface for parsing event handlers *)
     }
 
 let create_parser client  =
-  { line           = 1;
-    col            = 0;
-    eol            = EOL_None;
-    version        = None;
-    encoding       = None;
-    standalone     = None;
-    doc_name       = None;
-    sys_literal    = None;
-    pubid_literal  = None;
-    elem_stack     = [];
-    attr_stack     = [];
-    attr_set       = StringSet.empty;
-    quote_char     = '"';
-    parse_state    = XML_Parse_Initial;
-    expect_xmldecl = true;
-    in_epilog      = false;
-    end_parsing    = false;
-    client         = client;
-  }
+  let id_map = Array.make 64 "" in
+  let pmap = StringMap.empty in
+  let pmap = StringMap.add "xml"   1 pmap in
+  let pmap = StringMap.add "xmlns" 2 pmap in
+  let rmap = StringMap.empty in
+  let rmap = StringMap.add "http://www.w3.org/XML/1998/namespace" 1 rmap in
+  let rmap = StringMap.add "http://www.w3.org/2000/xmlns/" 2 rmap in
+  begin
+    id_map.(1) <- "http://www.w3.org/XML/1998/namespace";
+    id_map.(2) <- "http://www.w3.org/2000/xmlns/";
+    { line           = 1;
+      col            = 0;
+      eol            = EOL_None;
+      version        = None;
+      encoding       = None;
+      standalone     = None;
+      doc_name       = None;
+      sys_literal    = None;
+      pubid_literal  = None;
+
+      next_nspace_id = 3;
+      id_map         = id_map;
+      rev_id_map     = rmap;
+
+      default_nspace = 0;
+      prefix_map     = pmap;
+      nspace_stack   = [];
+
+      elem_stack     = [];
+
+      cur_elem       = ("", None);
+      attr_list      = [];
+
+      attr_set       = AttrSet.empty;
+      quote_char     = '"';
+      parse_state    = XML_Parse_Initial;
+      expect_xmldecl = true;
+      in_epilog      = false;
+      end_parsing    = false;
+
+      client         = client;
+    }
+  end
 
 let end_parsing p =
   p.end_parsing <- true
@@ -235,39 +285,49 @@ let cur_line p =
 let cur_column p =
   p.col
 
+let is_restricted_char c =
+  if  (('\x01' <= c && c <= '\x08')
+    || ('\x0B' <= c && c <= '\x0C')
+    || ('\x0E' <= c && c <= '\x1F')
+    || ('\x7F' <= c && c <= '\x84')
+    || ('\x86' <= c && c <= '\x9F')) then
+    true
+  else
+    false
+
 let is_space = function
   | ' ' | '\t' | '\r' | '\n' -> true
   | _ -> false
 
-let valid_version_char = function
+let is_valid_version_char = function
   | '0' .. '9' -> true
   | '.' -> true
   | _ -> false
 
-let valid_first_encname_char = function
+let is_valid_first_encname_char = function
   | 'A' .. 'Z' | 'a' .. 'z' -> true
   | _ -> false
 
-let valid_encname_char = function
+let is_valid_encname_char = function
   | '0' .. '9' -> true
   | '.' | '_' | '-' -> true
-  | c -> valid_first_encname_char c
+  | c -> is_valid_first_encname_char c
 
-let valid_standalone_char = function
+let is_valid_standalone_char = function
   | 'a' .. 'z' -> true
   | _ -> false
 
-let valid_first_name_char = function
-  | ':' | '_' -> true
+let is_valid_first_name_char = function
+  | '_' -> true
   | 'A' .. 'Z' | 'a' .. 'z' -> true
   | _ -> false
 
-let valid_name_char = function
+let is_valid_name_char = function
   | '-' | '.' -> true
   | '0' .. '9' -> true
-  | c -> valid_first_name_char c
+  | c -> is_valid_first_name_char c
 
-let valid_pubid_char = function
+let is_valid_pubid_char = function
   | 'A' .. 'Z' | 'a' .. 'z' | '0' .. '9'
   | '-' | '\'' | '(' | ')' | '+' | ','
   | '.' | '/'  | ':' | '=' | '?' | ';'
@@ -275,6 +335,110 @@ let valid_pubid_char = function
   | '%' | ' '  | '\r' | '\n'
     -> true
   | _ -> false
+
+let get_nspace_id s p =
+  try
+    StringMap.find s p.prefix_map
+  with
+  | Not_found ->
+      let num_ids = Array.length p.id_map in
+      if p.next_nspace_id = num_ids then
+	begin
+	  let a = Array.make (2 * num_ids) "" in
+	  Array.blit p.id_map 0 a 0 num_ids;
+	  p.id_map <- a
+	end;
+      p.id_map.(p.next_nspace_id) <- s;
+      p.prefix_map <- StringMap.add s p.next_nspace_id p.prefix_map;
+      let id = p.next_nspace_id in
+      p.next_nspace_id <- p.next_nspace_id + 1;
+      id
+
+let resolve_and_dispatch_start_tag p loc =
+  let resolved_elem =
+    match p.cur_elem with
+    | lname, None ->
+	(* default namespace *)
+	(p.default_nspace, p.id_map.(p.default_nspace), lname)
+    | lname, Some prefix ->
+	(* explicit namespace *)
+	try
+	  let nid = StringMap.find prefix p.prefix_map in
+	  let ns = p.id_map.(nid) in
+	  nid, ns, lname
+	with
+	| Not_found ->
+	    raise (XMLParseError (loc, "Undeclared namespace prefix in start tag"))
+  in
+  p.elem_stack <- resolved_elem :: p.elem_stack;
+  (* build up a list of resolved attributes *)
+  let resolved_attrs =
+    List.fold_left
+      (fun l (an, av) ->
+	match an with
+	| lname, None ->
+	    (* default namespaces do not apply to attributes *)
+	    if AttrSet.mem (0, lname) p.attr_set then
+	      raise  (XMLParseError (loc, "Duplicate attribute name"))
+	    else
+	      begin
+		p.attr_set <- AttrSet.add (0, lname) p.attr_set;
+		((0, p.id_map.(0), lname), av) :: l
+	      end
+	| lname, Some prefix ->
+	    let nid =
+	      try
+		StringMap.find prefix p.prefix_map
+	      with
+	      | Not_found ->
+		  raise (XMLParseError (loc, "Unknown namespace prefix"))
+	    in
+	    if AttrSet.mem (nid, lname) p.attr_set then
+	      raise  (XMLParseError (loc, "Duplicate attribute name"))
+	    else
+	      begin
+		p.attr_set <- AttrSet.add (nid, lname) p.attr_set;
+		((nid, p.id_map.(nid), lname), av) :: l
+	      end
+      )
+      ([] : (xml_name * string) list)
+      p.attr_list
+  in
+  p.client#xml_start_handler resolved_elem resolved_attrs;
+  p.attr_list <- [];
+  p.attr_set <- AttrSet.empty
+
+let resolve_and_dispatch_end_tag p loc =
+  let resolved_elem =
+    match p.cur_elem with
+    | lname, None ->
+	(* default namespace *)
+	(p.default_nspace, p.id_map.(p.default_nspace), lname)
+    | lname, Some prefix ->
+	(* explicit namespace *)
+	try
+	  let nid = StringMap.find prefix p.prefix_map in
+	  let ns = p.id_map.(nid) in
+	  (nid, ns, lname)
+	with
+	| Not_found ->
+	    raise (XMLParseError (loc, "Undeclared namespace prefix in end tag"))
+  in
+  if p.elem_stack = [] || List.hd p.elem_stack <> resolved_elem then
+    raise (XMLParseError (loc, "Mismatched end tag"))
+  else
+    begin
+      p.elem_stack <- List.tl p.elem_stack;
+      p.client#xml_end_handler resolved_elem;
+      p.in_epilog <- if p.elem_stack = [] then true else false;
+      p.parse_state <- if p.in_epilog then XML_Parse_Initial else XML_Parse_Tag_Content (XML_Content_Normal [])
+    end
+
+let dispatch_end_tag p =
+  p.client#xml_end_handler (List.hd p.elem_stack);
+  p.elem_stack <- List.tl p.elem_stack;
+  p.in_epilog <- if p.elem_stack = [] then true else false;
+  p.parse_state <- if p.in_epilog then XML_Parse_Initial else XML_Parse_Tag_Content (XML_Content_Normal [])
 
 let print_state p =
   let doc_name =
@@ -290,6 +454,10 @@ let print_state p =
     | Some s -> s
     | None -> ""
   and loc = ((p.line, p.col) : xml_parse_loc)
+  and format_prefix prefix =
+      match prefix with
+      | None -> ""
+      | Some p -> p
   in match p.parse_state with
   | XML_Parse_Initial ->
       "Initial"
@@ -410,7 +578,7 @@ let print_state p =
   | XML_Parse_DOCTYPE_Name clist ->
       Printf.sprintf "DOCTYPE(DOCTYPE %s)" (rev_clist_to_string clist)
   | XML_Parse_DOCTYPE_Name_Space ->
-      Printf.sprintf "DOCTYPE(DOCTYPE %s)" doc_name
+      Printf.sprintf "DOCTYPE(DOCTYPE %s )" doc_name
   | XML_Parse_DOCTYPE_SYSTEM_S ->
       Printf.sprintf "DOCTYPE(DOCTYPE %s S)" doc_name
   | XML_Parse_DOCTYPE_SYSTEM_SY ->
@@ -461,36 +629,47 @@ let print_state p =
       | (Some _, None) | (None, None) ->
 	  assert false
       )
-  | XML_Parse_Start_Tag clist ->
-      Printf.sprintf "StartTag(%s)" (rev_clist_to_string clist)
-  | XML_Parse_Attr_Name clist ->
-      Printf.sprintf "AttrName(%s)" (rev_clist_to_string clist)
-  | XML_Parse_Attr_Name_Space s ->
-      Printf.sprintf "AttrNameSpace(%s)" s
-  | XML_Parse_Attr_Name_Eq s ->
-      Printf.sprintf "AttrNameEq(%s)" s
-  | XML_Parse_Attr_Name_Eq_Space s ->
-      Printf.sprintf "AttrNameEqSpace(%s)" s
-  | XML_Parse_Attr_Value (n, aval) ->
+  | XML_Parse_Start_Tag (clist, prefix) ->
+      let pre = format_prefix prefix in
+      let lname = rev_clist_to_string clist in
+      Printf.sprintf "StartTag(%s:%s)" pre lname
+  | XML_Parse_Attr_Name (clist, prefix) ->
+      let pre = format_prefix prefix in
+      let lname = rev_clist_to_string clist in
+      Printf.sprintf "AttrName(%s:%s)" pre lname
+  | XML_Parse_Attr_Name_Space (lname, prefix) ->
+      let pre = format_prefix prefix in
+      Printf.sprintf "AttrNameSpace(%s:%s)" pre lname
+  | XML_Parse_Attr_Name_Eq (lname, prefix) ->
+      let pre = format_prefix prefix in
+      Printf.sprintf "AttrNameEq(%s:%s)" pre lname
+  | XML_Parse_Attr_Value ((lname, prefix), aval) ->
+      let pre = format_prefix prefix in
       begin
 	match aval with
 	| XML_Attr_Value_Normal clist ->
-	    Printf.sprintf "AttrValue(%s, %s)" n (rev_clist_to_string clist)
+	    Printf.sprintf "AttrValue(%s:%s, %s)" pre lname (rev_clist_to_string clist)
 	| XML_Attr_Value_Ref clist ->
-	    Printf.sprintf "AttrValue_Ref(%s, %s)" n (rev_clist_to_string clist)
+	    Printf.sprintf "AttrValue_Ref(%s:%s, %s)" pre lname (rev_clist_to_string clist)
 	| XML_Attr_Value_CharRef clist ->
-	    Printf.sprintf "AttrValue_CharRef(%s, %s)" n (rev_clist_to_string clist)
+	    Printf.sprintf "AttrValue_CharRef(%s:%s, %s)" pre lname (rev_clist_to_string clist)
 	| XML_Attr_Value_HexCharRef clist ->
-	    Printf.sprintf "AttrValue_HexCharRef(%s, %s)" n (rev_clist_to_string clist)
+	    Printf.sprintf "AttrValue_HexCharRef(%s:%s, %s)" pre lname (rev_clist_to_string clist)
 	| XML_Attr_Value_DecCharRefCode (clist, ccode) ->
-	    Printf.sprintf "AttrValue_DecCharRefCode(%s, %s, %d)" n (rev_clist_to_string clist) ccode
+	    Printf.sprintf "AttrValue_DecCharRefCode(%s:%s, %s, %d)" pre lname (rev_clist_to_string clist) ccode
 	| XML_Attr_Value_HexCharRefCode (clist, ccode) ->
-	    Printf.sprintf "AttrValue_HexCharRefCode(%s, %s, %d)" n (rev_clist_to_string clist) ccode
+	    Printf.sprintf "AttrValue_HexCharRefCode(%s:%s, %s, %d)" pre lname (rev_clist_to_string clist) ccode
 	| XML_Attr_Value_EntityRefName (clist, erlist) ->
-	    Printf.sprintf "AttrValue_EntityRef(%s, %s, %s)" n (rev_clist_to_string clist) (rev_clist_to_string erlist)
+	    Printf.sprintf "AttrValue_EntityRef(%s:%s, %s, %s)" pre lname (rev_clist_to_string clist) (rev_clist_to_string erlist)
       end
+  | XML_Parse_Attr_Value_End ->
+      "AttrValueEnd"
+  | XML_Parse_Attr_Value_End_Space ->
+      "AttrValueEndSpace"
   | XML_Parse_Start_Tag_Slash ->
-      Printf.sprintf "StartTagSlash(%s)" (List.hd p.elem_stack)
+      let lname, prefix = p.cur_elem in
+      let pre = match prefix with | None -> "" | Some pre -> pre in
+      Printf.sprintf "StartTagSlash(%s:%s)" pre lname
   | XML_Parse_Tag_Content content ->
       begin
 	match content with
@@ -513,10 +692,12 @@ let print_state p =
 	| XML_Content_RBrack_RBrack clist ->
 	    Printf.sprintf "Content_RBrack_RBrack('%s')" (rev_clist_to_string clist)
       end
-  | XML_Parse_End_Tag clist ->
-      Printf.sprintf "EndTag(%s)" (rev_clist_to_string clist)
-  | XML_Parse_End_Tag_Space clist ->
-      Printf.sprintf "EndTagSpace(%s)" (rev_clist_to_string clist)
+  | XML_Parse_End_Tag (clist, prefix) ->
+      let pre = format_prefix prefix in
+      Printf.sprintf "EndTag(%s:%s)" pre (rev_clist_to_string clist)
+  | XML_Parse_End_Tag_Space ->
+      let nid, ns, lname = List.hd p.elem_stack in
+      Printf.sprintf "EndTagSpace(%d:%s:%s)" nid ns lname
   | XML_Parse_Start_CondSect ->
       "Start_CondSect"
   | XML_Parse_Start_CDATA_C ->
@@ -548,9 +729,7 @@ let parse_char p c =
   | XML_Parse_Initial ->
       if c = '<' then
 	p.parse_state <- XML_Parse_Start
-      else if is_space c then
-	()
-      else
+      else if not (is_space c) then
 	raise (XMLParseError (loc, "Invalid char"))
   | XML_Parse_Start ->
       if c = '?' then
@@ -564,23 +743,21 @@ let parse_char p c =
 	if p.in_epilog then
 	  raise (XMLParseError (loc, "Invalid epilog"))
 	else
-	  p.parse_state <- XML_Parse_End_Tag []
-      else if valid_first_name_char c then
+	  p.parse_state <- XML_Parse_End_Tag ([], None)
+      else if is_valid_first_name_char c then
 	if p.in_epilog then
 	  raise (XMLParseError (loc, "Invalid epilog"))
 	else
 	  begin
 	    p.expect_xmldecl <- false;
-	    p.parse_state <- XML_Parse_Start_Tag [ c ]
+	    p.parse_state <- XML_Parse_Start_Tag ([ c ], None)
 	  end
       else
 	raise (XMLParseError (loc, "Invalid first character in start tag"))
   | XML_Parse_XMLDecl_XML_Space ->
-      if is_space c then
-	()
-      else if c = 'v' then
+      if c = 'v' then
 	p.parse_state <- XML_Parse_XMLDecl_Version_V
-      else
+      else if not (is_space c) then
 	raise (XMLParseError (loc, "Invalid XML declaration"))
   | XML_Parse_XMLDecl_Version_V ->
       if c = 'e' then
@@ -615,9 +792,7 @@ let parse_char p c =
   | XML_Parse_XMLDecl_Version_Version ->
       if c = '=' then
 	p.parse_state <- XML_Parse_XMLDecl_Version_eq
-      else if is_space c then
-	()
-      else
+      else if not (is_space c) then
 	raise (XMLParseError (loc, "Invalid XML declaration"))
   | XML_Parse_XMLDecl_Version_eq ->
       if c = '\'' || c = '"' then
@@ -625,9 +800,7 @@ let parse_char p c =
 	  p.quote_char <- c;
 	  p.parse_state <- XML_Parse_XMLDecl_Version []
 	end
-      else if is_space c then
-	()
-      else
+      else if not (is_space c) then
 	raise (XMLParseError (loc, "Invalid XML version declaration"))
   | XML_Parse_XMLDecl_Version clist ->
       if c = p.quote_char then
@@ -641,7 +814,7 @@ let parse_char p c =
 	  raise (XMLParseError (loc, "Invalid XML version declaration"))
       else if c = '\'' || c = '"' then
 	raise (XMLParseError (loc, "Invalid XML version declaration"))
-      else if valid_version_char c then
+      else if is_valid_version_char c then
 	p.parse_state <- XML_Parse_XMLDecl_Version (c :: clist)
       else
 	raise (XMLParseError (loc, "Invalid XML version declaration"))
@@ -659,9 +832,7 @@ let parse_char p c =
 	p.parse_state <- XML_Parse_XMLDecl_Standalone_S
       else if c = '?' then
 	p.parse_state <- XML_Parse_XMLDecl_Q
-      else if is_space c then
-	()
-      else
+      else if not (is_space c) then
 	raise (XMLParseError (loc, "Invalid XML declaration"))
   | XML_Parse_XMLDecl_Encoding_E ->
       if c = 'n' then
@@ -701,9 +872,7 @@ let parse_char p c =
   | XML_Parse_XMLDecl_Encoding_Encoding ->
       if c = '=' then
 	p.parse_state <- XML_Parse_XMLDecl_Encoding_eq
-      else if is_space c then
-	()
-      else
+      else if not (is_space c) then
 	raise (XMLParseError (loc, "Invalid XML declaration"))
   | XML_Parse_XMLDecl_Encoding_eq ->
       if c = '\'' || c = '"' then
@@ -711,9 +880,7 @@ let parse_char p c =
 	  p.quote_char <- c;
 	  p.parse_state <- XML_Parse_XMLDecl_Encoding []
 	end
-      else if is_space c then
-	()
-      else
+      else if not(is_space c) then
 	raise (XMLParseError (loc, "Invalid XML declaration"))
   | XML_Parse_XMLDecl_Encoding clist ->
       if c = p.quote_char then
@@ -721,9 +888,9 @@ let parse_char p c =
 	  p.encoding <- Some (rev_clist_to_string clist);
 	  p.parse_state <- XML_Parse_XMLDecl_Encoding_End
 	end
-      else if clist = [] && valid_first_encname_char c then
+      else if clist = [] && is_valid_first_encname_char c then
 	p.parse_state <- XML_Parse_XMLDecl_Encoding [ c ]
-      else if clist <> [] && valid_encname_char c then
+      else if clist <> [] && is_valid_encname_char c then
 	p.parse_state <- XML_Parse_XMLDecl_Encoding (c :: clist)
       else
 	raise (XMLParseError (loc, "Invalid XML encoding declaration"))
@@ -739,9 +906,7 @@ let parse_char p c =
 	p.parse_state <- XML_Parse_XMLDecl_Standalone_S
       else if c = '?' then
 	p.parse_state <- XML_Parse_XMLDecl_Q
-      else if is_space c then
-	()
-      else
+      else if not (is_space c) then
 	raise (XMLParseError (loc, "Invalid XML declaration"))
   | XML_Parse_XMLDecl_Standalone_S ->
       if c = 't' then
@@ -791,9 +956,7 @@ let parse_char p c =
   | XML_Parse_XMLDecl_Standalone_Standalone ->
       if c = '=' then
 	p.parse_state <- XML_Parse_XMLDecl_Standalone_eq
-      else if is_space c then
-	()
-      else
+      else if not (is_space c) then
 	raise (XMLParseError (loc, "Invalid XML declaration"))
   | XML_Parse_XMLDecl_Standalone_eq ->
       if c = '\'' || c = '"' then
@@ -801,9 +964,7 @@ let parse_char p c =
 	  p.quote_char <- c;
 	  p.parse_state <- XML_Parse_XMLDecl_Standalone []
 	end
-      else if is_space c then
-	()
-      else
+      else if not (is_space c) then
 	raise (XMLParseError (loc, "Invalid XML declaration"))
   | XML_Parse_XMLDecl_Standalone clist ->
       if c = p.quote_char then
@@ -817,7 +978,7 @@ let parse_char p c =
 	p.parse_state <- XML_Parse_XMLDecl_Standalone_End
       else if c = '\'' || c = '"' then
 	raise (XMLParseError (loc, "Invalid XML standalone declaration"))
-      else if valid_standalone_char c then
+      else if is_valid_standalone_char c then
 	p.parse_state <- XML_Parse_XMLDecl_Standalone (c :: clist)
       else
 	raise (XMLParseError (loc, "Invalid XML standalone declaration"));
@@ -831,9 +992,7 @@ let parse_char p c =
   | XML_Parse_XMLDecl_Standalone_Space ->
       if c = '?' then
 	p.parse_state <- XML_Parse_XMLDecl_Q
-      else if is_space c then
-	()
-      else
+      else if not (is_space c) then
 	raise (XMLParseError (loc, "Invalid XML declaration"))
   | XML_Parse_XMLDecl_Q ->
       if c = '>' then
@@ -842,16 +1001,16 @@ let parse_char p c =
 	raise (XMLParseError (loc, "Invalid XML declaration"))
   | XML_Parse_Start_PI_Target clist ->
       if clist = [] then
-	if not (valid_first_name_char c) then
-	  raise (XMLParseError (loc, "Invalid first character in processing instruction target"))
-	else
+	if is_valid_first_name_char c then
 	  p.parse_state <- XML_Parse_Start_PI_Target (c :: clist)
+	else
+	  raise (XMLParseError (loc, "Invalid first character in processing instruction target"))
       else
 	if is_space c or c = '?' then
 	  let pi_target = rev_clist_to_string clist in
 	  match pi_target with
 	  | "xml" ->
-	      if p.expect_xmldecl || c <> '?' then
+	      if p.expect_xmldecl && c <> '?' then
 		begin
 		  p.expect_xmldecl <- false;
 		  p.parse_state <- XML_Parse_XMLDecl_XML_Space
@@ -870,20 +1029,26 @@ let parse_char p c =
 		else
 		  p.parse_state <- XML_Parse_PI_Space pi_target
 	      end
-	else if valid_name_char c then
+	else if is_valid_name_char c then
 	  p.parse_state <- XML_Parse_Start_PI_Target (c :: clist)
 	else
 	  raise (XMLParseError (loc, "Invalid character in processing instruction target"))
   | XML_Parse_PI_Space instr ->
       if c = '?' then
 	p.parse_state <- XML_Parse_PI_Q (instr, "")
-      else if not (is_space c) then
-	p.parse_state <- XML_Parse_PI (instr, [c])
+      else if is_space c then
+	()
+      else if not (is_restricted_char c) && c <> '\x00' then
+	p.parse_state <- XML_Parse_PI (instr, [ c ])
+      else
+	raise (XMLParseError (loc, "Invalid character in processing instruction"))
   | XML_Parse_PI (instr, clist) ->
       if c = '?' then
 	p.parse_state <- XML_Parse_PI_Q (instr, (rev_clist_to_string clist))
-      else
+      else if not (is_restricted_char c) && c <> '\x00' then
 	p.parse_state <- XML_Parse_PI (instr, c :: clist)
+      else
+	raise (XMLParseError (loc, "Invalid character in processing instruction"))
   | XML_Parse_PI_Q (instr, text) ->
       if c = '>' then
 	begin
@@ -925,13 +1090,17 @@ let parse_char p c =
   | XML_Parse_Comment clist ->
       if c = '-' then
 	p.parse_state <- XML_Parse_Comment_Dash clist
-      else
+      else if not (is_restricted_char c) && c <> '\x00' then
 	p.parse_state <- XML_Parse_Comment (c :: clist)
+      else
+	raise (XMLParseError (loc, "Invalid character in comment"))
   | XML_Parse_Comment_Dash clist ->
       if c = '-' then
 	p.parse_state <- XML_Parse_Comment_Dash_Dash clist
-      else
+      else if not (is_restricted_char c) && c <> '\x00' then
 	p.parse_state <- XML_Parse_Comment (c :: '-' :: clist)
+      else
+	raise (XMLParseError (loc, "Invalid character in comment"))
   | XML_Parse_Comment_Dash_Dash clist ->
       if c = '>' then
 	begin
@@ -982,7 +1151,7 @@ let parse_char p c =
   | XML_Parse_DOCTYPE_Space ->
       if is_space c then
 	()
-      else if valid_first_name_char c then
+      else if is_valid_first_name_char c then
 	p.parse_state <- XML_Parse_DOCTYPE_Name [ c ]
       else
 	raise (XMLParseError (loc, "Invalid Doctype"))
@@ -992,7 +1161,7 @@ let parse_char p c =
 	  p.doc_name <- (Some (rev_clist_to_string clist));
 	  p.parse_state <- XML_Parse_DOCTYPE_Name_Space
 	end
-      else if valid_name_char c then
+      else if is_valid_name_char c then
 	p.parse_state <- XML_Parse_DOCTYPE_Name (c :: clist)
       else if c = '>' then
 	let dn = rev_clist_to_string clist in
@@ -1012,10 +1181,8 @@ let parse_char p c =
 	p.parse_state <- XML_Parse_DOCTYPE_PUBLIC_P
       else if c = '>' then
 	let dn = get_docname p in
-	begin
-	  p.client#xml_doctype_handler dn None;
-	  p.parse_state <- XML_Parse_Initial
-	end
+	p.client#xml_doctype_handler dn None;
+	p.parse_state <- XML_Parse_Initial
       else if c = '[' then
 	raise (XMLParseError (loc, "Unsupported Doctype (internal subset)"))
       else
@@ -1051,14 +1218,12 @@ let parse_char p c =
       else
 	raise (XMLParseError (loc, "Invalid Doctype"))
   | XML_Parse_DOCTYPE_SYSTEM_Space ->
-      if is_space c then
-	()
-      else if c = '"' || c = '\'' then
+      if c = '"' || c = '\'' then
 	begin
 	  p.quote_char <- c;
 	  p.parse_state <- XML_Parse_DOCTYPE_SysLiteral []
 	end
-      else
+      else if not (is_space c) then
 	raise (XMLParseError (loc, "Invalid Doctype"))
   | XML_Parse_DOCTYPE_SysLiteral clist ->
       if c = p.quote_char then
@@ -1066,8 +1231,10 @@ let parse_char p c =
 	  p.sys_literal <- Some (rev_clist_to_string clist);
 	  p.parse_state <- XML_Parse_DOCTYPE_ExternalId_Space
 	end
-      else
+      else if not (is_restricted_char c) && c <> '\x00' then
 	p.parse_state <- XML_Parse_DOCTYPE_SysLiteral (c :: clist)
+      else
+	raise (XMLParseError (loc, "Invalid character in Doctype"))
   | XML_Parse_DOCTYPE_PUBLIC_P ->
       if c = 'U' then
 	p.parse_state <- XML_Parse_DOCTYPE_PUBLIC_PU
@@ -1099,14 +1266,12 @@ let parse_char p c =
       else
 	raise (XMLParseError (loc, "Invalid Doctype"))
   | XML_Parse_DOCTYPE_PUBLIC_Space ->
-      if is_space c then
-	()
-      else if c = '"' || c = '\'' then
+      if c = '"' || c = '\'' then
 	begin
 	  p.quote_char <- c;
 	  p.parse_state <- XML_Parse_DOCTYPE_PubidLiteral []
 	end
-      else
+      else if not (is_space c) then
 	raise (XMLParseError (loc, "Invalid Doctype"))
   | XML_Parse_DOCTYPE_PubidLiteral clist ->
       if c = p.quote_char then
@@ -1114,7 +1279,7 @@ let parse_char p c =
 	  p.pubid_literal <- Some (rev_clist_to_string clist);
 	  p.parse_state <- XML_Parse_DOCTYPE_PubidLiteral_End
 	end
-      else if valid_pubid_char c then
+      else if is_valid_pubid_char c then
 	p.parse_state <- XML_Parse_DOCTYPE_PubidLiteral (c :: clist)
       else
 	raise (XMLParseError (loc, "Invalid character in Doctype PubidLiteral"))
@@ -1124,19 +1289,15 @@ let parse_char p c =
       else
 	raise (XMLParseError (loc, "Invalid character in Doctype PubidLiteral"))
   | XML_Parse_DOCTYPE_PubidLiteral_Space ->
-      if is_space c then
-	()
-      else if c = '"' || c = '\'' then
+      if c = '"' || c = '\'' then
 	begin
 	  p.quote_char <- c;
 	  p.parse_state <- XML_Parse_DOCTYPE_SysLiteral []
 	end
-      else
+      else if not (is_space c) then
 	raise (XMLParseError (loc, "Invalid character in Doctype PubidLiteral"))
   | XML_Parse_DOCTYPE_ExternalId_Space ->
-      if is_space c then
-	()
-      else if c = '[' then
+      if c = '[' then
 	raise (XMLParseError (loc, "Unsupported Doctype (internal subset)"))
       else if c = '>' then
 	let extid =
@@ -1152,106 +1313,131 @@ let parse_char p c =
 	  p.client#xml_doctype_handler dn extid;
 	  p.parse_state <- XML_Parse_Initial
 	end
-      else
+      else if not (is_space c) then
 	raise (XMLParseError (loc, "Invalid Doctype"))
-  | XML_Parse_Start_Tag clist ->
-      if is_space c then
+  | XML_Parse_Start_Tag (lname, prefix) ->
+      if c = ':' then
+	match prefix with
+	| None -> p.parse_state <- XML_Parse_Start_Tag ([], Some (rev_clist_to_string lname))
+	| Some _ -> raise (XMLParseError (loc, "Invalid start tag"))
+      else if is_space c then
 	begin
-	  p.elem_stack <- rev_clist_to_string clist :: p.elem_stack;
-	  p.parse_state <- XML_Parse_Attr_Name []
+	  if lname = [] then
+	    raise (XMLParseError (loc, "Invalid start tag"));
+	  p.cur_elem <- (rev_clist_to_string lname, prefix);
+	  p.nspace_stack <- (p.prefix_map, p.default_nspace) :: p.nspace_stack;
+	  p.parse_state <- XML_Parse_Attr_Name ([], None)
 	end
       else if c = '>' then
-	let start_tag = rev_clist_to_string clist in
 	begin
-	  p.elem_stack <- start_tag :: p.elem_stack;
-	  p.client#xml_start_handler start_tag [];
+	  if lname = [] then
+	    raise (XMLParseError (loc, "Invalid start tag"));
+	  p.cur_elem <- (rev_clist_to_string lname, prefix);
+	  p.nspace_stack <- (p.prefix_map, p.default_nspace) :: p.nspace_stack;
+	  assert (p.attr_list = []);
+	  assert (p.attr_set = AttrSet.empty);
+	  resolve_and_dispatch_start_tag p loc;
 	  p.parse_state <- XML_Parse_Tag_Content (XML_Content_Normal [])
 	end
       else if c = '/' then
 	begin
-	  p.elem_stack <- rev_clist_to_string clist :: p.elem_stack;
+	  if lname = [] then
+	    raise (XMLParseError (loc, "Invalid start tag"));
+	  p.cur_elem <- (rev_clist_to_string lname, prefix);
+	  p.nspace_stack <- (p.prefix_map, p.default_nspace) :: p.nspace_stack;
 	  p.parse_state <- XML_Parse_Start_Tag_Slash
 	end
-      else if valid_name_char c then
-	p.parse_state <- XML_Parse_Start_Tag (c :: clist)
+      else if is_valid_name_char c then
+	p.parse_state <- XML_Parse_Start_Tag ((c :: lname), prefix)
       else
 	raise (XMLParseError (loc, "Invalid character in start tag"))
-  | XML_Parse_Attr_Name clist ->
-      if clist = [] then
-	if is_space c then
-	  ()
-	else if c = '/' then
-	  p.parse_state <- XML_Parse_Start_Tag_Slash
-	else if c = '>' then
-	  begin
-	    p.client#xml_start_handler (List.hd p.elem_stack) (List.rev p.attr_stack);
-	    p.attr_stack <- [];
-	    p.attr_set <- StringSet.empty;
-	    p.parse_state <- XML_Parse_Tag_Content (XML_Content_Normal [])
-	  end
-	else if not (valid_first_name_char c) then
-	  raise (XMLParseError (loc, "Invalid first attribute name character"))
-	else
-	  p.parse_state <- XML_Parse_Attr_Name (c :: clist)
+  | XML_Parse_Attr_Name (lname, prefix) ->
+      if c = ':' then
+	match prefix with
+	| None -> p.parse_state <- XML_Parse_Attr_Name ([], Some (rev_clist_to_string lname))
+	| Some _ -> raise (XMLParseError (loc, "Invalid attribute name"))
       else if c = '=' then
-	p.parse_state <- XML_Parse_Attr_Name_Eq (rev_clist_to_string clist)
+	if lname = [] then
+	  raise (XMLParseError (loc, "Invalid attribute"))
+	else
+	  p.parse_state <- XML_Parse_Attr_Name_Eq (rev_clist_to_string lname, prefix)
       else if is_space c then
-	p.parse_state <- XML_Parse_Attr_Name_Space (rev_clist_to_string clist)
-      else if valid_name_char c then
-	p.parse_state <- XML_Parse_Attr_Name (c :: clist)
+	if lname = [] then
+	  raise (XMLParseError (loc, "Invalid attribute"))
+	else
+	  p.parse_state <- XML_Parse_Attr_Name_Space (rev_clist_to_string lname, prefix)
+      else if is_valid_name_char c then
+	p.parse_state <- XML_Parse_Attr_Name ((c :: lname), prefix)
       else
 	raise (XMLParseError (loc, "Invalid attribute name character"))
   | XML_Parse_Attr_Name_Space attr_name ->
       if c = '=' then
 	p.parse_state <- XML_Parse_Attr_Name_Eq attr_name
-      else if is_space c then
-	()
-      else
+      else if not (is_space c) then
 	raise (XMLParseError (loc, "Invalid attribute specification"))
   | XML_Parse_Attr_Name_Eq attr_name ->
-      if is_space c then
-	p.parse_state <- XML_Parse_Attr_Name_Eq_Space attr_name
-      else if c = '"' || c = '\'' then
-	begin
-	  p.quote_char <- c;
-	  p.parse_state <- XML_Parse_Attr_Value (attr_name, (XML_Attr_Value_Normal []))
-	end
-      else
-	raise (XMLParseError (loc, "Invalid attribute specification"))
-  | XML_Parse_Attr_Name_Eq_Space attr_name ->
       if c = '"' || c = '\'' then
 	begin
 	  p.quote_char <- c;
 	  p.parse_state <- XML_Parse_Attr_Value (attr_name, (XML_Attr_Value_Normal []))
 	end
-      else if is_space c then
-	()
-      else
+      else if not (is_space c) then
 	raise (XMLParseError (loc, "Invalid attribute specification"))
   | XML_Parse_Attr_Value (attr_name, attr_val) ->
       if c = p.quote_char then
-	if StringSet.mem attr_name p.attr_set then
-	  raise (XMLParseError (loc, "Non-unique attribute name"))
-	else
-	  begin
-	    match attr_val with
-	    | XML_Attr_Value_Normal clist ->
-		p.attr_stack <- (attr_name, rev_clist_to_string clist) :: p.attr_stack;
-		p.attr_set <- StringSet.add attr_name p.attr_set;
-		p.parse_state <- XML_Parse_Attr_Name []
-	    | XML_Attr_Value_Ref clist ->
-		raise (XMLParseError (loc, "Invalid character in attribute value"))
-	    | XML_Attr_Value_CharRef clist ->
-		raise (XMLParseError (loc, "Invalid attribute value (unterminated character reference)"))
-	    | XML_Attr_Value_EntityRefName (clist, erlist) ->
-		raise (XMLParseError (loc, "Invalid attribute value (unterminated entity reference)"))
-	    | XML_Attr_Value_DecCharRefCode (clist, ccode) ->
-		raise (XMLParseError (loc, "Invalid attribute value (unterminated character reference)"))
-	    | XML_Attr_Value_HexCharRef clist ->
-		raise (XMLParseError (loc, "Invalid attribute value (unterminated character reference)"))
-	    | XML_Attr_Value_HexCharRefCode (clist, ccode) ->
-		raise (XMLParseError (loc, "Invalid attribute value (unterminated character reference)"))
-	  end
+	match attr_val with
+	| XML_Attr_Value_Normal clist ->
+	    let xmlns = "xmlns" in
+	    let s = rev_clist_to_string clist in
+	    begin
+	      p.parse_state <- XML_Parse_Attr_Value_End;
+	      match attr_name with
+	      | ("xmlns", None) ->
+		  (* default namespace decl *)
+		  if AttrSet.mem (0, xmlns) p.attr_set then
+		    raise (XMLParseError (loc, "Redeclaration of default namespace"))
+		  else
+		    begin
+		      p.attr_set <- AttrSet.add (0, xmlns) p.attr_set;
+		      p.default_nspace <- if s = "" then 0 else get_nspace_id s p
+		    end
+	      | (prefix_decl, Some "xmlns") ->
+		  (* namespace decl *)
+		  if AttrSet.mem (2, prefix_decl) p.attr_set then
+		    raise (XMLParseError (loc, "Redeclaration of namespace"))
+		  else
+		    begin
+		      match prefix_decl with
+		      | "xmlns" ->
+			  raise (XMLParseError (loc, "The xmlns namespace prefix cannot be assigned"))
+		      | "xml" ->
+			  if s <> p.id_map.(1) then
+			    raise (XMLParseError (loc, "The xml namespace prefix cannot be changed"))
+			  else
+			    p.attr_set <- AttrSet.add (2, prefix_decl) p.attr_set
+		      | _ ->
+			  p.attr_set <- AttrSet.add (2, prefix_decl) p.attr_set;
+			  if s = "" then
+			    p.prefix_map <- StringMap.remove prefix_decl p.prefix_map
+			  else
+			    let nid = get_nspace_id s p in
+			    p.prefix_map <- StringMap.add prefix_decl nid p.prefix_map
+		    end
+	      | _ ->
+		  p.attr_list <- (attr_name, s) :: p.attr_list
+	    end
+	| XML_Attr_Value_Ref clist ->
+	    raise (XMLParseError (loc, "Invalid character in attribute value"))
+	| XML_Attr_Value_CharRef clist ->
+	    raise (XMLParseError (loc, "Invalid attribute value (unterminated character reference)"))
+	| XML_Attr_Value_EntityRefName (clist, erlist) ->
+	    raise (XMLParseError (loc, "Invalid attribute value (unterminated entity reference)"))
+	| XML_Attr_Value_DecCharRefCode (clist, ccode) ->
+	    raise (XMLParseError (loc, "Invalid attribute value (unterminated character reference)"))
+	| XML_Attr_Value_HexCharRef clist ->
+	    raise (XMLParseError (loc, "Invalid attribute value (unterminated character reference)"))
+	| XML_Attr_Value_HexCharRefCode (clist, ccode) ->
+	    raise (XMLParseError (loc, "Invalid attribute value (unterminated character reference)"))
       else if c = '<' then
 	raise (XMLParseError (loc, "Invalid character in attribute value"))
       else
@@ -1262,12 +1448,14 @@ let parse_char p c =
 		p.parse_state <- XML_Parse_Attr_Value (attr_name, XML_Attr_Value_Ref clist)
 	      else if c = '\t' || c = '\n' || c = '\r' then
 		p.parse_state <- XML_Parse_Attr_Value (attr_name, XML_Attr_Value_Normal (' ' :: clist))
-	      else
+	      else if not (is_restricted_char c) && c <> '\x00' then
 		p.parse_state <- XML_Parse_Attr_Value (attr_name, XML_Attr_Value_Normal (c :: clist))
+	      else
+		raise (XMLParseError (loc, "Invalid character in attribute value"))
 	  | XML_Attr_Value_Ref clist ->
 	      if c = '#' then
 		p.parse_state <- XML_Parse_Attr_Value (attr_name, XML_Attr_Value_CharRef clist)
-	      else if valid_first_name_char c then
+	      else if is_valid_first_name_char c then
 		p.parse_state <- XML_Parse_Attr_Value (attr_name, XML_Attr_Value_EntityRefName (clist, [ c ]))
 	      else
 		raise (XMLParseError (loc, "Invalid character in attribute value"))
@@ -1304,12 +1492,12 @@ let parse_char p c =
 		    if ccode > 255 then
 		      raise (XMLParseError (loc, "Invalid character reference (not in supported range)"))
 		    else if ccode = 0 then
-		      raise (XMLParseError (loc, "Invalid character reference"))
-		    else if ccode = int_of_char '<' then
-		      raise (XMLParseError (loc, "Illegal character < in attribute value"))
+		      raise (XMLParseError (loc, "Illegal character reference"))
 		    else
 		      let ch = char_of_int ccode in
-		      if ch = '\t' || ch = '\n' || ch = '\r' then
+		      if ch = '<' then
+			raise (XMLParseError (loc, "Illegal character < in attribute value"))
+		      else if ch = '\t' || ch = '\n' || ch = '\r' then
 			p.parse_state <- XML_Parse_Attr_Value (attr_name, XML_Attr_Value_Normal (' ' :: clist))
 		      else
 			p.parse_state <- XML_Parse_Attr_Value (attr_name, XML_Attr_Value_Normal (ch :: clist))
@@ -1332,12 +1520,12 @@ let parse_char p c =
 		    if ccode > 255 then
 		      raise (XMLParseError (loc, "Invalid character reference (not in supported range)"))
 		    else if ccode = 0 then
-		      raise (XMLParseError (loc, "Invalid character reference"))
-		    else if ccode = int_of_char '<' then
-		      raise (XMLParseError (loc, "Illegal character < in attribute value"))
+		      raise (XMLParseError (loc, "Illegal character reference"))
 		    else
 		      let ch = char_of_int ccode in
-		      if ch = '\t' || ch = '\n' || ch = '\r' then
+		      if ch = '<' then
+			raise (XMLParseError (loc, "Illegal character < in attribute value"))
+		      else if ch = '\t' || ch = '\n' || ch = '\r' then
 			p.parse_state <- XML_Parse_Attr_Value (attr_name, XML_Attr_Value_Normal (' ' :: clist))
 		      else
 			p.parse_state <- XML_Parse_Attr_Value (attr_name, XML_Attr_Value_Normal (ch :: clist))
@@ -1348,27 +1536,51 @@ let parse_char p c =
 	      if c = ';' then
 		let ename = List.rev ernlist in
 		try
-		  let eval = get_entity_as_char ename in
-		  if eval = '<' then
+		  let ch = get_entity_as_char ename in
+		  if ch = '<' then
 		    raise (XMLParseError (loc, "Illegal character < in attribute value"))
 		  else
-		    p.parse_state <- XML_Parse_Attr_Value (attr_name, XML_Attr_Value_Normal (eval :: clist))
+		    p.parse_state <- XML_Parse_Attr_Value (attr_name, XML_Attr_Value_Normal (ch :: clist))
 		with Not_found ->
 		  raise (XMLParseError (loc, "Unsupported or unknown entity reference"))
-	      else if valid_name_char c then
+	      else if is_valid_name_char c then
 		p.parse_state <- XML_Parse_Attr_Value (attr_name, XML_Attr_Value_EntityRefName (clist, (c :: ernlist)))
 	      else
 		raise (XMLParseError (loc, "Invalid character in entity reference"))
 	end
+  | XML_Parse_Attr_Value_End ->
+      if c = '/' then
+	p.parse_state <- XML_Parse_Start_Tag_Slash
+      else if c = '>' then
+	begin
+	  resolve_and_dispatch_start_tag p loc;
+	  p.parse_state <- XML_Parse_Tag_Content (XML_Content_Normal [])
+	end
+      else if is_space c then
+	p.parse_state <- XML_Parse_Attr_Value_End_Space
+      else
+	raise (XMLParseError (loc, "Space expected after attribute value"))
+  | XML_Parse_Attr_Value_End_Space ->
+      if c = '/' then
+	p.parse_state <- XML_Parse_Start_Tag_Slash
+      else if c = '>' then
+	begin
+	  resolve_and_dispatch_start_tag p loc;
+	  p.parse_state <- XML_Parse_Tag_Content (XML_Content_Normal [])
+	end
+      else if is_valid_first_name_char c then
+	p.parse_state <- XML_Parse_Attr_Name ([ c ], None)
+      else if not (is_space c) then
+	raise (XMLParseError (loc, "Invalid first attribute name character"))
   | XML_Parse_Start_Tag_Slash ->
       if c = '>' then
 	begin
-	  p.client#xml_start_handler (List.hd p.elem_stack) (List.rev p.attr_stack);
-	  p.attr_stack <- [];
-	  p.attr_set <- StringSet.empty;
+	  resolve_and_dispatch_start_tag p loc;
 	  if not p.end_parsing then
-	    p.client#xml_end_handler (List.hd p.elem_stack);
-	  p.elem_stack <- List.tl p.elem_stack;
+	    dispatch_end_tag p;
+	  let (prev_pmap, prev_def_nspace) = List.hd p.nspace_stack in
+	  p.prefix_map <- prev_pmap;
+	  p.default_nspace <- prev_def_nspace;
 	  p.in_epilog <- if p.elem_stack = [] then true else false;
 	  p.parse_state <- if p.in_epilog then XML_Parse_Initial else XML_Parse_Tag_Content (XML_Content_Normal [])
 	end
@@ -1410,8 +1622,10 @@ let parse_char p c =
 		p.parse_state <- XML_Parse_Tag_Content (XML_Content_Ref clist)
 	      else if c = ']' then
 		p.parse_state <- XML_Parse_Tag_Content (XML_Content_RBrack clist)
-	      else
+	      else if not (is_restricted_char c) && c <> '\x00' then
 		p.parse_state <- XML_Parse_Tag_Content (XML_Content_Normal (c :: clist))
+	      else
+		raise (XMLParseError (loc, "Invalid character in element content"))
 	  | XML_Content_RBrack clist ->
 	      if c = '&' then
 		p.parse_state <- XML_Parse_Tag_Content (XML_Content_Ref (']' :: clist))
@@ -1427,7 +1641,7 @@ let parse_char p c =
 	  | XML_Content_Ref clist ->
 	      if c = '#' then
 		p.parse_state <- XML_Parse_Tag_Content (XML_Content_CharRef clist)
-	      else if valid_first_name_char c then
+	      else if is_valid_first_name_char c then
 		p.parse_state <- XML_Parse_Tag_Content (XML_Content_EntityRefName (clist, [ c ]))
 	      else
 		raise (XMLParseError (loc, "Invalid element content"))
@@ -1447,9 +1661,8 @@ let parse_char p c =
 		  p.parse_state <- XML_Parse_Tag_Content (XML_Content_Normal (ch :: clist))
 		with
 		  Not_found -> raise (XMLParseError (loc, "Unknown/invalid entity reference"))
-	      else if valid_name_char c then
-		p.parse_state <- XML_Parse_Tag_Content (XML_Content_EntityRefName
-							  (clist, (c :: erlist)))
+	      else if is_valid_name_char c then
+		p.parse_state <- XML_Parse_Tag_Content (XML_Content_EntityRefName (clist, (c :: erlist)))
 	      else
 		raise (XMLParseError (loc, "Invalid element content"))
 	  | XML_Content_DecCharRefCode (clist, ccode) ->
@@ -1500,41 +1713,33 @@ let parse_char p c =
 		    raise (XMLParseError (loc, "Invalid character in character reference"))
 	      end
 	end
-  | XML_Parse_End_Tag clist ->
-      if clist = [] then
-	if not (valid_first_name_char c) then
+  | XML_Parse_End_Tag (lname, prefix) ->
+      if lname = [] then
+	if is_valid_first_name_char c then
+	  p.parse_state <- XML_Parse_End_Tag ([ c ], prefix)
+	else
 	  raise (XMLParseError (loc, "Invalid first character in end tag"))
-	else
-	  p.parse_state <- XML_Parse_End_Tag (c :: clist)
+      else if c = ':' then
+	match prefix with
+	| None -> p.parse_state <- XML_Parse_End_Tag ([], Some (rev_clist_to_string lname))
+	| Some _ -> raise (XMLParseError (loc, "Invalid end tag"))
       else if c = '>' then
-	let end_tag = rev_clist_to_string clist in
-	if p.elem_stack = [] || (List.hd p.elem_stack) <> end_tag then
-	  raise (XMLParseError (loc, "Mismatched end tag"))
-	else
-	  begin
-	    p.elem_stack <- List.tl p.elem_stack;
-	    p.client#xml_end_handler end_tag;
-	    p.in_epilog <- if p.elem_stack = [] then true else false;
-	    p.parse_state <- if p.in_epilog then XML_Parse_Initial else XML_Parse_Tag_Content (XML_Content_Normal [])
-	  end
+	begin
+	  p.cur_elem <- rev_clist_to_string lname, prefix;
+	  resolve_and_dispatch_end_tag p loc
+	end
       else if is_space c then
-	p.parse_state <- XML_Parse_End_Tag_Space (c :: clist)
-      else if valid_name_char c then
-	p.parse_state <- XML_Parse_End_Tag (c :: clist)
+	begin
+	  p.cur_elem <- rev_clist_to_string lname, prefix;
+	  p.parse_state <- XML_Parse_End_Tag_Space
+	end
+      else if is_valid_name_char c then
+	p.parse_state <- XML_Parse_End_Tag ((c :: lname), prefix)
       else
 	raise (XMLParseError (loc, "Invalid character in end tag"))
-  | XML_Parse_End_Tag_Space clist ->
+  | XML_Parse_End_Tag_Space ->
       if c = '>' then
-	let end_tag = rev_clist_to_string clist in
-	if p.elem_stack = [] || (List.hd p.elem_stack) <> end_tag then
-	  raise (XMLParseError (loc, "Mismatched end tag"))
-	else
-	  begin
-	    p.elem_stack <- List.tl p.elem_stack;
-	    p.client#xml_end_handler end_tag;
-	    p.in_epilog <- if p.elem_stack = [] then true else false;
-	    p.parse_state <- if p.in_epilog then XML_Parse_Initial else XML_Parse_Tag_Content (XML_Content_Normal [])
-	  end
+	resolve_and_dispatch_end_tag p loc
       else if not (is_space c) then
 	raise (XMLParseError (loc, "Invalid character in end tag"))
   | XML_Parse_Start_CondSect ->
@@ -1574,13 +1779,17 @@ let parse_char p c =
   | XML_Parse_CDATA clist ->
       if c = ']' then
 	p.parse_state <- XML_Parse_CDATA_RBrack clist
-      else
+      else if not (is_restricted_char c) && c <> '\x00' then
 	p.parse_state <- XML_Parse_CDATA (c :: clist)
+      else
+	raise (XMLParseError (loc, "Invalid character in CDATA"))
   | XML_Parse_CDATA_RBrack clist ->
       if c = ']' then
 	p.parse_state <- XML_Parse_CDATA_RBrack_RBrack clist
-      else
+      else if not (is_restricted_char c) && c <> '\x00' then
 	p.parse_state <- XML_Parse_CDATA (c :: ']' :: clist)
+      else
+	raise (XMLParseError (loc, "Invalid character in CDATA"))
   | XML_Parse_CDATA_RBrack_RBrack clist ->
       if c = ']' then
 	p.parse_state <- XML_Parse_CDATA_RBrack_RBrack (c :: clist)
@@ -1593,25 +1802,32 @@ let parse_char p c =
 	    else
 	      XML_Parse_Tag_Content (XML_Content_Normal [])
 	end
-      else
+      else if not (is_restricted_char c) && c <> '\x00' then
 	p.parse_state <- XML_Parse_CDATA (c :: ']' :: ']' :: clist)
+      else
+	raise (XMLParseError (loc, "Invalid character in CDATA"))
 
 let parse p s is_last_buffer =
   let handle_eol c =
     match p.eol with
     | EOL_None ->
-	if c = '\r' then p.eol <- EOL_CR else parse_char p c
+	if c = '\x0D' then
+	  p.eol <- EOL_CR
+	else if c = '\x85' then
+	  parse_char p '\x0A'
+	else
+	  parse_char p c
     | EOL_CR ->
-	if c = '\n' then
+	if c = '\x0A' or c = '\x85' then
 	  begin
-	    parse_char p c;
-	    p.eol <- EOL_None
+	    p.eol <- EOL_None;
+	    parse_char p '\x0A'
 	  end
 	else
 	  begin
-	    parse_char p '\n';
-	    parse_char p c;
-	    p.eol <- EOL_None
+	    p.eol <- EOL_None;
+	    parse_char p '\x0A';
+	    parse_char p c
 	  end
   in
   let buflen = String.length s in

@@ -157,6 +157,7 @@ type t =
       mutable attr_set      : StringSet.t;                  (* set of attr names used to detect duplicates *)
       mutable quote_char    : char;                         (* quote char for attribute value, and system/public literal *)
       mutable parse_state   : xml_parser_state;             (* current parsing state *)
+      mutable in_epilog     : bool;                         (* whether the end of element tree has been passed *)
       mutable end_parsing   : bool;                         (* whether parsing is done, and no callbacks should be called *)
       mutable client        : xml_parser_client_interface;  (* client interface for parsing event handlers *)
     }
@@ -173,6 +174,7 @@ let create_parser client  =
     attr_set      = StringSet.empty;
     quote_char    = '"';
     parse_state   = XML_Parse_Initial;
+    in_epilog     = false;
     end_parsing   = false;
     client        = client;
   }
@@ -392,7 +394,7 @@ let print_state p =
       Printf.sprintf "CDATA]](%s)" (rev_clist_to_string clist)
 
 let parse_char p c =
-(* Printf.printf "State = '%s' Input = '%c'\n" (print_state p) c; *)
+(*  Printf.printf "State = '%s' Input = '%c'\n" (print_state p) c; *)
   let loc = ((p.line, p.col) : xml_parse_loc) in
   let get_docname p =
     match p.doc_name with
@@ -405,7 +407,7 @@ let parse_char p c =
 	begin
 	  match c with
 	  | '<' -> p.parse_state <- XML_Parse_Start
-	  |  _  -> raise (XMLParseError (loc, "Unexpected char before a document tag"))
+	  |  _  -> raise (XMLParseError (loc, "Unexpected char outside element content"))
 	end
   | XML_Parse_Start ->
       if c = '?' then
@@ -413,9 +415,15 @@ let parse_char p c =
       else if c = '!' then
 	p.parse_state <- XML_Parse_Start_Bang
       else if c = '/' then
-	p.parse_state <- XML_Parse_End_Tag []
+	if p.in_epilog then
+	  raise (XMLParseError (loc, "Invalid epilog"))
+	else
+	  p.parse_state <- XML_Parse_End_Tag []
       else if valid_first_name_char c then
-	p.parse_state <- XML_Parse_Start_Tag [ c ]
+	if p.in_epilog then
+	  raise (XMLParseError (loc, "Invalid epilog"))
+	else
+	  p.parse_state <- XML_Parse_Start_Tag [ c ]
       else
 	raise (XMLParseError (loc, "Invalid first character in start tag"))
   | XML_Parse_Start_PI_Target clist ->
@@ -470,7 +478,10 @@ let parse_char p c =
 	else
 	  raise (XMLParseError (loc, "Invalid tag"))
       else if c = '[' then
-	p.parse_state <- XML_Parse_Start_CondSect
+	if p.in_epilog then
+	  raise (XMLParseError (loc, "Invalid epilog"))
+	else
+	  p.parse_state <- XML_Parse_Start_CondSect
       else
 	raise (XMLParseError (loc, "Unsupported XML"))
   | XML_Parse_Start_Bang_Dash ->
@@ -905,7 +916,8 @@ let parse_char p c =
 	  p.attr_set <- StringSet.empty;
 	  p.client#xml_end_handler (List.hd p.tag_stack);
 	  p.tag_stack <- List.tl p.tag_stack;
-	  p.parse_state <- XML_Parse_Tag_Content (XML_Content_Normal [])
+	  p.in_epilog <- if p.tag_stack = [] then true else false;
+	  p.parse_state <- if p.in_epilog then XML_Parse_Initial else XML_Parse_Tag_Content (XML_Content_Normal [])
 	end
       else
 	raise (XMLParseError (loc, "Invalid character in tag"))
@@ -1049,7 +1061,8 @@ let parse_char p c =
 	  begin
 	    p.tag_stack <- List.tl p.tag_stack;
 	    p.client#xml_end_handler end_tag;
-	    p.parse_state <- XML_Parse_Tag_Content (XML_Content_Normal [])
+	    p.in_epilog <- if p.tag_stack = [] then true else false;
+	    p.parse_state <- if p.in_epilog then XML_Parse_Initial else XML_Parse_Tag_Content (XML_Content_Normal [])
 	  end
       else if is_space c then
 	p.parse_state <- XML_Parse_End_Tag_Space (c :: clist)
@@ -1065,7 +1078,9 @@ let parse_char p c =
 	else
 	  begin
 	    p.tag_stack <- List.tl p.tag_stack;
-	    p.client#xml_end_handler end_tag
+	    p.client#xml_end_handler end_tag;
+	    p.in_epilog <- if p.tag_stack = [] then true else false;
+	    p.parse_state <- if p.in_epilog then XML_Parse_Initial else XML_Parse_Tag_Content (XML_Content_Normal [])
 	  end
       else if not (is_space c) then
 	raise (XMLParseError (loc, "Invalid character in end tag"))
@@ -1096,7 +1111,11 @@ let parse_char p c =
 	raise (XMLParseError (loc, "Unsupported XML"))
   | XML_Parse_Start_CDATA_CDATA ->
       if c = '[' then
-	p.parse_state <- XML_Parse_CDATA []
+	(* CData sections can only appear as element content *)
+	if p.tag_stack = [] then
+	  raise (XMLParseError (loc, "Invalid prolog"))
+	else
+	  p.parse_state <- XML_Parse_CDATA []
       else
 	raise (XMLParseError (loc, "Unsupported XML"))
   | XML_Parse_CDATA clist ->
@@ -1110,7 +1129,9 @@ let parse_char p c =
       else
 	p.parse_state <- XML_Parse_CDATA (c :: ']' :: clist)
   | XML_Parse_CDATA_RBrack_RBrack clist ->
-      if c = '>' then
+      if c = ']' then
+	p.parse_state <- XML_Parse_CDATA_RBrack_RBrack (c :: clist)
+      else if c = '>' then
 	begin
 	  p.client#xml_cdata_handler (rev_clist_to_string clist);
 	  p.parse_state <-

@@ -1,0 +1,35 @@
+oxml is currently a simple incremental XML non-conforming parser with
+a SAX API.
+
+It is non-conforming in the sense it
+
+- does not dereference any external doctypes or entities in 
+  non-standalone documents. Consequently, non-standalone documents
+  that are not well-formed may be parsed with no error.
+
+- does not support entity and notation declarations and references,
+  and all numerical character references (only the subset of numerical
+  character references with values within the 0-255 range).  Unknown
+  entity and character references are left intact and passed to the
+  application; this is another reason why non-well-formed documents
+  may be passed without error.
+
+- does not parse parameter declarations and references, and internal 
+  subsets of DTD declarations in the document.
+
+- cannot perform DTD validation.
+
+- only handles characters in the ISO 8859-1 encoding.
+
+- does not check character and parsed entity normalization.
+
+- performs limited normalization of attribute values (only references
+  to the predefined entities and some character references are
+  normalized, viz. the subset mentioned above).
+
+It also does not directly provide any namespace information to the
+application; the application needs to deduce this information from its
+SAX callbacks.
+
+The reason this parser was written was to parse simple custom XML
+network protocols in client-server applications.

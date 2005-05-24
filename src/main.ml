@@ -4,14 +4,14 @@ let print_usage argv0 =
 
 class xml_client =
   object
-    inherit Xmlparser.xml_parser_client_interface
+    inherit Xmlparser.parser_client_interface
     method xml_doctype_handler docname extid_opt =
-      match extid_opt with 
+      match extid_opt with
       |	None ->
 	  Printf.printf "<!DOCTYPE %s>\n" docname
-      | Some (Xmlparser.XMLSystemId s) ->
+      | Some (Xmlparser.SystemId s) ->
 	  Printf.printf "<!DOCTYPE %s SYSTEM \"%s\">\n" docname s
-      | Some (Xmlparser.XMLPublicId (p, s)) ->
+      | Some (Xmlparser.PublicId (p, s)) ->
 	  Printf.printf "<!DOCTYPE %s PUBLIC \"%s\" \"%s\">\n" docname p s
     method xml_proc_instr_handler instr text =
       Printf.printf "<?%s %s?>\n" instr text
@@ -49,15 +49,15 @@ let main () =
 	  let line = input_line fl in
 	  Printf.printf "Parsing '%s'\n" line;
 	  if not !first_line then
-	    Xmlparser.parse xp "\n" false;
-	  Xmlparser.parse xp line false;
+	    ignore (Xmlparser.parse xp "\n" false);
+	  ignore (Xmlparser.parse xp line false);
 	  first_line := false
 	done
       with
       | End_of_file ->
 	  begin
 	    close_in fl;
-	    Xmlparser.parse xp "" true
+	    ignore (Xmlparser.parse xp "" true)
 	  end
       | _ as e ->
 	  begin

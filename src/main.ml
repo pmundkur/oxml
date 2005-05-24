@@ -44,6 +44,7 @@ let main () =
       let xp = Xmlparser.create_parser cb in
       let fl = open_in Sys.argv.(1) in
       let first_line = ref true in
+      Xmlparser.enable_parsing xp;
       try
 	while true do
 	  let line = input_line fl in

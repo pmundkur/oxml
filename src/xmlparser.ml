@@ -234,8 +234,9 @@ type t =
 								    the current parsing location *)
       mutable in_epilog       : bool;                            (* whether the end of element tree
 								    has been passed *)
-      mutable end_parsing     : bool;                            (* whether parsing is done, and no
-								    callbacks should be called *)
+      mutable parsing_enabled : bool;                            (* whether parsing is currently
+								    enabled (i.e. whether any callbacks
+								    should be called *)
 
       mutable client          : parser_client_interface;         (* event handler interface *)
     }
@@ -251,42 +252,45 @@ let create_parser client  =
   begin
     id_map.(1) <- "http://www.w3.org/XML/1998/namespace";
     id_map.(2) <- "http://www.w3.org/2000/xmlns/";
-    { line           = 1;
-      col            = 0;
-      eol            = EOL_None;
-      version        = None;
-      encoding       = None;
-      standalone     = None;
-      doc_name       = None;
-      sys_literal    = None;
-      pubid_literal  = None;
+    { line            = 1;
+      col             = 0;
+      eol             = EOL_None;
+      version         = None;
+      encoding        = None;
+      standalone      = None;
+      doc_name        = None;
+      sys_literal     = None;
+      pubid_literal   = None;
 
-      next_nspace_id = 3;
-      id_map         = id_map;
-      rev_id_map     = rmap;
+      next_nspace_id  = 3;
+      id_map          = id_map;
+      rev_id_map      = rmap;
 
-      default_nspace = 0;
-      prefix_map     = pmap;
-      nspace_stack   = [];
+      default_nspace  = 0;
+      prefix_map      = pmap;
+      nspace_stack    = [];
 
-      elem_stack     = [];
+      elem_stack      = [];
 
-      cur_elem       = ("", None);
-      attr_list      = [];
+      cur_elem        = ("", None);
+      attr_list       = [];
 
-      attr_set       = AttrSet.empty;
-      quote_char     = '"';
-      parse_state    = Parse_Initial;
-      expect_xmldecl = true;
-      in_epilog      = false;
-      end_parsing    = false;
+      attr_set        = AttrSet.empty;
+      quote_char      = '"';
+      parse_state     = Parse_Initial;
+      expect_xmldecl  = true;
+      in_epilog       = false;
+      parsing_enabled = false;
 
-      client         = client;
+      client          = client;
     }
   end
 
-let end_parsing p =
-  p.end_parsing <- true
+let enable_parsing p =
+  p.parsing_enabled <- true
+
+let disable_parsing p =
+  p.parsing_enabled <- false
 
 let cur_line p =
   p.line
@@ -1603,8 +1607,7 @@ let parse_char p c =
       if c = '>' then
         begin
           resolve_and_dispatch_start_tag p loc;
-          if not p.end_parsing then
-            dispatch_end_tag p;
+          dispatch_end_tag p;
           let (prev_pmap, prev_def_nspace) = List.hd p.nspace_stack in
           p.prefix_map <- prev_pmap;
           p.default_nspace <- prev_def_nspace;
@@ -1859,7 +1862,7 @@ let parse p s is_last_buffer =
   in
   let buflen = String.length s in
   let i = ref 0 in
-  while !i < buflen && not p.end_parsing do
+  while !i < buflen && p.parsing_enabled do
     let c = s.[!i] in
     handle_eol c;
     p.col <- p.col + 1;

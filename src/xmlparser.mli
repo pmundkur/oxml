@@ -29,7 +29,9 @@ class virtual parser_client_interface :
 
 val create_parser : parser_client_interface -> t
 
-val end_parsing : t -> unit
+val enable_parsing  : t -> unit
+
+val disable_parsing : t -> unit
 
 val cur_line : t -> int
 

@@ -1,3 +1,11 @@
+- testing:
+  . check the return value of parse
+  . try enabling/disabling/resuming parsing at different points in the
+    event stream.  especially test for the case when the client
+    disables parsing during a start_elem callback for an atomic
+    element without a separate end tag (e.g. <A att="" />) (the parser
+    should call the end_tag callback as soon as parsing is resumed.)
+
 - more accurate errors for attribute names and start elements.
   currently error positions will correspond to the end of the start
   element.

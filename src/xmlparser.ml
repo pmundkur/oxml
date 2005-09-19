@@ -236,7 +236,8 @@ type t =
 								    has been passed *)
       mutable parsing_enabled : bool;                            (* whether parsing is currently
 								    enabled (i.e. whether any callbacks
-								    should be called *)
+								    should be called) *)
+      mutable pending_end_tag : bool;                            (* whether an end_tag event is pending *)
 
       mutable client          : parser_client_interface;         (* event handler interface *)
     }
@@ -281,6 +282,7 @@ let create_parser client  =
       expect_xmldecl  = true;
       in_epilog       = false;
       parsing_enabled = false;
+      pending_end_tag = false;
 
       client          = client;
     }
@@ -451,7 +453,10 @@ let dispatch_end_tag p =
   p.client#xml_end_handler (List.hd p.elem_stack);
   p.elem_stack <- List.tl p.elem_stack;
   p.in_epilog <- if p.elem_stack = [] then true else false;
-  p.parse_state <- if p.in_epilog then Parse_Initial else Parse_Tag_Content (Content_Normal [])
+  p.parse_state <- if p.in_epilog then Parse_Initial else Parse_Tag_Content (Content_Normal []);
+  let (prev_pmap, prev_def_nspace) = List.hd p.nspace_stack in
+  p.prefix_map <- prev_pmap;
+  p.default_nspace <- prev_def_nspace
 
 let print_state p =
   let doc_name =
@@ -1607,12 +1612,10 @@ let parse_char p c =
       if c = '>' then
         begin
           resolve_and_dispatch_start_tag p loc;
-          dispatch_end_tag p;
-          let (prev_pmap, prev_def_nspace) = List.hd p.nspace_stack in
-          p.prefix_map <- prev_pmap;
-          p.default_nspace <- prev_def_nspace;
-          p.in_epilog <- if p.elem_stack = [] then true else false;
-          p.parse_state <- if p.in_epilog then Parse_Initial else Parse_Tag_Content (Content_Normal [])
+	  if p.parsing_enabled then
+            dispatch_end_tag p
+	  else
+	    p.pending_end_tag <- true
         end
       else
         raise (XMLParseError (loc, "Invalid character in tag"))
@@ -1860,6 +1863,11 @@ let parse p s is_last_buffer =
             parse_char p c
           end
   in
+  if p.pending_end_tag then
+    begin
+      p.pending_end_tag <- false;
+      dispatch_end_tag p
+    end;
   let buflen = String.length s in
   let i = ref 0 in
   while !i < buflen && p.parsing_enabled do
